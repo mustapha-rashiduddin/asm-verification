@@ -234,3 +234,100 @@ trace contains, as expected for `add x0, x1, #3`:
 5. **Cosmetic**: piping `isla-footprint` into an early-closing pipe (e.g.
    `| head`) produces SIGABRT (exit 134) because the release profile sets
    `panic = "abort"` and the writer hits EPIPE. Full runs to a file exit 0.
+
+## 10. Islaris installed and built (build PASSED)
+
+Date: 2026-09-20, same machine. Goal for this step: build **Islaris itself**
+(no examples generated, no proofs, no ArchSem). Reproducible instructions in
+`installation.md` (part 3).
+
+**Confirmed untouched** (checked after the build): the existing Rocq 9.2
+`default` opam switch still has exactly `rocq-core/runtime/stdlib 9.2.0`,
+`rocq-stdpp 1.13.0`, `rocq-stdpp-bitvector 1.13.0`, `rocq-sail-stdpp 0.20.2`;
+`rocq` is still the default on `PATH`. `~/rems/sail-arm` still at `1bf2e55`,
+`~/rems/isla` at `bf1a42f8`, `~/rems/isla-snapshots` at `d8b31014` — none
+modified (sail-arm's `Makefile`+`arm_extras.v` local modifications are from the
+original Rocq task, not this one). The `default` switch's repository selection
+was temporarily widened while debugging opam repo scoping and then restored to
+`default`-only.
+
+**Versions in play**
+
+- Islaris commit `c978e10f50db5c40f0fdf113f5f76a779782c6f9`.
+- Compatible isla `b8e614bda4a20e42c37d8b216853653133d04322` (built, release)
+  in `~/rems/isla-islaris`; compatible snapshots
+  `b58da9170470a422c9396983ac8f87f0a63ba6f8` in `~/rems/isla-snapshots-islaris`.
+  Islaris's `bin/isla-footprint` is pointed at these via `ISLA_REPO` /
+  `ISLA_SNAP_REPO` (its default `../../isla` = the untouched `~/rems/isla`).
+- Local opam switch: `/home/ubuntu/rems/islaris` (its `_opam`), invariant
+  `ocaml-variants.4.14.0+options` + `ocaml-option-flambda` → OCaml
+  **4.14.0**, opam 2.1.5.
+- In that switch: **Coq 8.19.0** (`coq-core`, `coq-stdlib`, `coqide-server`
+  8.19.0), dune pinned **3.9.1**, coq-lithium
+  `dev.2024-09-11.0.7945a29d`, coq-stdpp/-bitvector/-unstable
+  `dev.2024-09-10.3.a1a12e00`, coq-iris `dev.2024-09-10.1.6f24ed4b`,
+  coq-record-update 0.3.3, isla-lang pinned git
+  `bda86c9f0bd28bbaa2481f50ddc986ede342805a`, menhir 20260209, ott 0.34,
+  cmdliner 2.1.1, integers 0.8.0, pprint 20230830, zarith 1.14 (conf-gmp/5,
+  conf-pkg-config/5 pulled in). Full list in `installation.md`.
+
+**What was run (in order)**
+
+```
+# (Ubuntu deps were already present: libgmp-dev, binutils-aarch64-linux-gnu — verified)
+git clone https://github.com/rems-project/islaris.git   # → ~/rems/islaris
+git checkout c978e10f50db5c40f0fdf113f5f76a779782c6f9
+
+# Islaris-compatible Isla snapshot checkouts that the frontend will use:
+git clone https://github.com/rems-project/isla.git isla-islaris
+git -C isla-islaris checkout b8e614bda4a20e42c37d8b216853653133d04322
+git clone https://github.com/rems-project/isla-snapshots.git isla-snapshots-islaris
+git -C isla-snapshots-islaris checkout b58da9170470a422c9396983ac8f87f0a63ba6f8
+
+# build the compatible Isla (links system libz3.so.4 / Z3 4.8.12):
+cd ~/rems/isla-islaris && cargo build --release     # OK, ~5 m 18 s, warnings only
+
+# local opam switch inside the checkout:
+cd ~/rems/islaris
+opam switch create . ocaml-variants.4.14.0+options ocaml-option-flambda --no-install
+opam repo add coq-released https://coq.inria.fr/opam/released --switch=/home/ubuntu/rems/islaris
+opam repo add iris-dev https://gitlab.mpi-sws.org/iris/opam.git --switch=/home/ubuntu/rems/islaris
+opam update                     # OK, exit 0 — repos are reachable in the local switch
+eval $(opam env)
+opam pin add dune.3.9.1 'git+https://github.com/ocaml/dune.git#3.9.1'  # see problems
+opam install dune -y            # dune 3.9.1
+make builddep OPAMFLAGS=-y      # installs coq 8.19.0 + pinned deps (see list above)
+make                            # dune build _build/default/islaris.install
+```
+
+**Build result:** `make` (the `all` target → `dune build … islaris.install`)
+completed with exit code **0**. Output includes `_build/default/islaris.install`
+and the frontend binary `_build/default/frontend/main.exe`; `dune exec -- islaris
+--help` prints the manual and exits 0. Coq theories/examples compiled
+successfully (`… (successful)`, liARun tactic calls reported success).
+
+**Problems encountered and workarounds**
+
+1. `make builddep` prompts interactively ("create as a NEW package?"); under a
+   non-tty it aborted at the first prompt → run `make builddep OPAMFLAGS=-y`.
+2. `coq-lithium … unknown package` in the first `make builddep` attempt: the
+   new repos were not actually in the **local switch's** repository selection.
+   The first `opam repo add … --switch islaris` did not select the local switch
+   (its id is the full path `/home/ubuntu/rems/islaris`) and instead leaked the
+   repos into the `default` switch's selection (packages there were never
+   touched). Fixed by `opam repo add … --switch=/home/ubuntu/rems/islaris`
+   (full path) and reverted the default-switch selection with
+   `opam repo remove … --switch=default`. Verified: default switch selection is
+   back to `default`, and its installed packages are unchanged.
+3. `dune = 3.9.1 no matching version`: dune 3.9.1 was pruned from the current
+   (2026) opam-repository (versions go 3.6.2 → 3.10.0). Workaround: pinned it
+   from the upstream git tag:
+   `opam pin add dune.3.9.1 'git+https://github.com/ocaml/dune.git#3.9.1'`
+   (must use `dune.3.9.1` as the pin name, otherwise opam kept 3.24.2) then
+   `opam install dune -y` downgraded to 3.9.1.
+4. Everything else (coq 8.19.0, coq-lithium pinned version, coq-record-update
+   0.3.3, stdpp dev, isla-lang git pin) resolved cleanly from `coq-released` +
+   `iris-dev` + `default`.
+
+**Out of scope for this step:** generating examples (`make generate`),
+proving anything, and installing ArchSem — all intentionally not done.

@@ -266,3 +266,157 @@ Quirks worth knowing:
 
 Verify your install is reproducible: the same checkout + `cargo build --release`
 on another machine gives the same smoke-test result.
+
+---
+
+# Installation guide (part 3): Islaris
+
+Islaris is the machine-code verification layer on top of the Isla footprint
+tool. This guide covers *building Islaris itself* only — no example generation,
+no proofs, no ArchSem. Done on Ubuntu 24.04.5 LTS (**aarch64**) on 2026-09-20,
+alongside the Rocq/Sail-ARM (part 1) and Isla (part 2) setups, **none of which
+were modified**. Build result: **passed** (`make` exit 0).
+
+Exact working set:
+
+| component | version / SHA |
+|---|---|
+| islaris | commit `c978e10f50db5c40f0fdf113f5f76a779782c6f9` |
+| isla (Islaris-compatible) | commit `b8e614bda4a20e42c37d8b216853653133d04322` |
+| isla-snapshots (compatible) | commit `b58da9170470a422c9396983ac8f87f0a63ba6f8` |
+| isla-lang (opam pin) | git `bda86c9f0bd28bbaa2481f50ddc986ede342805a` |
+| OCaml (local switch) | 4.14.0 (`ocaml-variants.4.14.0+options` + `ocaml-option-flambda`) |
+| Coq | **8.19.0** in the local switch |
+| dune | pinned **3.9.1** (git tag) |
+| opam | 2.1.5 |
+
+## 1. Prerequisites (Ubuntu)
+
+GMP and the AArch64 binutils (both were already installed on this box):
+
+```bash
+sudo apt-get install -y libgmp-dev binutils-aarch64-linux-gnu
+```
+
+Also required for the compatible Isla build: `libz3-dev` (see part 2) and a
+Rust toolchain.
+
+## 2. Compatible Isla + snapshot checkouts (do NOT touch parts 1/2 dirs)
+
+Islaris expects a working Isla checkout and its snapshots next to it. Keep the
+existing `~/rems/isla` / `~/rems/isla-snapshots` as they are and make separate
+checkouts at the tested revisions:
+
+```bash
+cd ~/rems
+git clone https://github.com/rems-project/isla.git isla-islaris
+git -C isla-islaris checkout b8e614bda4a20e42c37d8b216853653133d04322
+git clone https://github.com/rems-project/isla-snapshots.git isla-snapshots-islaris
+git -C isla-snapshots-islaris checkout b58da9170470a422c9396983ac8f87f0a63ba6f8
+
+cd ~/rems/isla-islaris
+cargo build --release        # links system libz3.so.4 (Z3 4.8.12); ~5 min on 4×arm64
+```
+
+Islaris's `bin/isla-footprint` finds these either via environment variables or
+relative paths. Since we did not use the names it defaults to, export:
+
+```bash
+export ISLA_REPO="$HOME/rems/isla-islaris"
+export ISLA_SNAP_REPO="$HOME/rems/isla-snapshots-islaris"
+```
+
+(The snapshot file Islaris actually loads for aarch64 is `aarch64.ir`, which
+ships uncompressed in that snapshot checkout.)
+
+## 3. Local opam switch inside the Islaris checkout
+
+Islaris pins Coq 8.19.0 and dev versions of stdpp/iris/lithium, so use a
+dedicated switch — never the Rocq 9.2 `default` switch:
+
+```bash
+cd ~/rems/islaris           # AFTER git clone + checkout c978e10f…
+opam switch create . ocaml-variants.4.14.0+options ocaml-option-flambda --no-install
+```
+
+Add the two non-default repositories and scope them to this switch. Important:
+the local switch's id is its **full path** — a bare `--switch islaris` does not
+select it (it leaks the repos into the default switch instead). Always use
+`--switch=/home/ubuntu/rems/islaris`:
+
+```bash
+eval $(opam env)
+opam repo add coq-released https://coq.inria.fr/opam/released --switch=/home/ubuntu/rems/islaris
+opam repo add iris-dev https://gitlab.mpi-sws.org/iris/opam.git --switch=/home/ubuntu/rems/islaris
+opam update
+```
+
+If you accidentally widened the default switch's selection, restore it with
+`opam repo remove <repo> --switch=default`.
+
+## 4. Install dependencies and build
+
+Readme procedure, with a flag to survive non-interactive shells and a dune pin
+(see quirks below):
+
+```bash
+cd ~/rems/islaris
+eval $(opam env)
+opam pin add dune.3.9.1 'git+https://github.com/ocaml/dune.git#3.9.1'
+opam install dune -y
+make builddep OPAMFLAGS=-y
+make
+```
+
+What `make builddep` installs (exact versions on this machine, switch
+`/home/ubuntu/rems/islaris`):
+
+| package | version |
+|---|---|
+| coq / coq-core / coq-stdlib / coqide-server | 8.19.0 |
+| coq-lithium | dev.2024-09-11.0.7945a29d |
+| coq-stdpp, coq-stdpp-bitvector, coq-stdpp-unstable | dev.2024-09-10.3.a1a12e00 |
+| coq-iris | dev.2024-09-10.1.6f24ed4b |
+| coq-record-update | 0.3.3 |
+| isla-lang | dev (git pin `bda86c9f…`) |
+| dune | 3.9.1 (pinned, git tag) |
+| menhir & friends | 20260209 |
+| ott | 0.34 |
+| cmdliner | 2.1.1 |
+| integers | 0.8.0 |
+| pprint | 20230830 |
+| zarith | 1.14 |
+| ocamlfind | 1.9.8 |
+| ocamlgraph | 2.2.0 |
+| conf-gmp / conf-pkg-config / conf-linux-libc-dev | 5 / 5 / 0 |
+
+Build result: `make` → `dune build _build/default/islaris.install` → exit 0.
+Artifacts: `_build/default/islaris.install`, `_build/default/frontend/main.exe`.
+Sanity check (offline, generates nothing):
+
+```bash
+eval $(opam env)
+dune exec -- islaris --help     # prints the manual, exit 0
+```
+
+## 5. Quirks / workarounds
+
+- **dune 3.9.1 was pruned from the current opam-repository** ("dune = 3.9.1 no
+  matching version"; available versions skip 3.6.2 → 3.10.0). Pin from the git
+  tag, using the version-qualified pin name so opam doesn't keep the newer
+  version: `opam pin add dune.3.9.1 'git+https://github.com/ocaml/dune.git#3.9.1'`.
+- **`make builddep` prompts** ("create as a NEW package?", pin confirmations)
+  and fails silent-prompt in a non-tty — pass `OPAMFLAGS=-y`.
+- **Local-switch repo scoping**: `opam repo add … --switch <basename>` silently
+  fails to target a local switch. Use the absolute switch path.
+- **Check the untouched installs after any opam work**: `opam switch` to
+  `default` must list only the Rocq 9.2 packages from part 1 (see worklog §10 for
+  the verified list) and `~/rems/{sail-arm,isla,isla-snapshots}` must still be
+  at their original commits.
+
+## 6. Next steps (not done here)
+
+`make generate` (needs `PATH=$PWD/bin:$PATH` so the frontend finds
+`bin/isla-footprint`, plus `ISLA_REPO`/`ISLA_SNAP_REPO`), and proving the
+generated Coq (`make` builds the shipped examples already, but our own traces
+are future work). ArchSem was explicitly **not** installed.
