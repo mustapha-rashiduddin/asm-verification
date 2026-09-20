@@ -164,3 +164,105 @@ hurts.)
 - If a compile *hangs* visibly, `pkill -f "rocq compile"` (and
   `pkill -f rocqworker`). Use `timeout -k 1 N`, not `timeout N` alone — plain
   `timeout` lets `rocq` survive SIGTERM.
+
+---
+
+# Installation guide (part 2): Isla symbolic execution engine
+
+Isla is a symbolic-execution engine for Sail IR; the prebuilt model snapshots
+live in `isla-snapshots`. We only installed/build/verified **Isla itself** here —
+not Islaris/Iris/ArchSem. Everything below was run on Ubuntu 24.04.5 LTS
+(**aarch64**) on 2026-09-20, alongside the Rocq/Sail-ARM setup in part 1 (that
+setup was not touched). Build result: `cargo build --release` succeeds and the
+ARM 9.4 footprint smoke test **passed** (exit 0, symbolic trace).
+
+Exact working set:
+
+| component | version |
+|---|---|
+| Rust / Cargo | **1.98.1** (stable, rustup) |
+| Z3 (shared lib) | **4.8.12-3.1build1** (Ubuntu `libz3-dev`) |
+| isla | commit `bf1a42f8a6097089fba4810fccc73dcc640267ab` |
+| isla-snapshots | commit `d8b31014643035a3b11071e56ef30001de3f52ab` |
+
+## 1. Prerequisites (Ubuntu)
+
+Rust (no toolchain was present; rustup):
+
+```bash
+curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+sh /tmp/rustup-init.sh --profile default -y --default-toolchain stable
+export PATH="$HOME/.cargo/bin:$PATH"     # add to ~/.bashrc
+rustc --version   # 1.98.1
+cargo --version   # 1.98.1
+```
+
+Z3 development library (a bare `z3` binary is *not* enough — Isla links
+`libz3.so` through the `z3-sys 0.5.0` crate):
+
+```bash
+sudo apt-get install -y libz3-dev   # Z3 4.8.12 on Ubuntu 24.04 (arm64)
+ldconfig -p | grep z3               # libz3.so, libz3.so.4 must appear
+```
+
+## 2. Get Isla and the model snapshots
+
+```bash
+cd ~/rems
+git clone https://github.com/rems-project/isla.git
+cd isla
+git checkout bf1a42f8a6097089fba4810fccc73dcc640267ab
+
+cd ~/rems
+git clone https://github.com/rems-project/isla-snapshots.git
+cd isla-snapshots
+git checkout d8b31014643035a3b11071e56ef30001de3f52ab
+```
+
+## 3. Prepare the ARM 9.4 model
+
+The snapshots ship `armv9p4.ir.gz` and Isla's model loader does **not** read
+gzip. Decompress:
+
+```bash
+cd ~/rems/isla-snapshots
+gzip -dk armv9p4.ir.gz     # keep the .gz, produce armv9p4.ir (~155 MB)
+```
+
+## 4. Build Isla (release)
+
+```bash
+cd ~/rems/isla
+cargo build --release
+```
+
+Took ~3 m 49 s on the 4-core aarch64 box. Output: `target/release/isla-*`.
+Only dead-code warnings; nothing fatal. (`z3-sys` finds the system Z3 via
+pkg-config; the `z3` product of the build is a Rust crate that does **not**
+need the `z3` binary on `PATH`.)
+
+## 5. ARM 9.4 footprint smoke test
+
+This was the goal test — instruction `add x0, x1, #3` against the ARM 9.4
+snapshot:
+
+```bash
+cd ~/rems/isla-snapshots
+~/rems/isla/target/release/isla-footprint \
+  -A armv9p4.ir -C ~/rems/isla/configs/armv9p4.toml -i "add x0, x1, #3" -s
+```
+
+Successful result: exit code **0**, deterministic symbolic trace ending in
+`(write-reg |R0| nil …)` after bvadding `#x…3` to a `read-reg |R1|`.
+
+Quirks worth knowing:
+
+- A `No primop emulator_read_tag … emulator_write_tag …` message on stderr is
+  benign (two primops in the snapshot this Isla commit does not model);
+  execution still completes.
+- The release profile has `panic = "abort"`, so piping the tool into an
+  early-closing pipe (e.g. `… | head`) aborts it with SIGABRT/EPIPE. Redirect to
+  a file instead.
+
+Verify your install is reproducible: the same checkout + `cargo build --release`
+on another machine gives the same smoke-test result.

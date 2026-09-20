@@ -155,3 +155,82 @@ the fit for that.
   the Rocq support library does not provide. See installation.md.
 - `/tmp/opencode/smoketest/` is ephemeral (tmpfs). Copy `loop.v`, this file,
   and `installation.md` into a real repo before rebooting.
+
+## 9. Isla symbolic execution engine installed (ARM 9.4 footprint test PASSED)
+
+Date: 2026-09-20, same machine as the Rocq work above. This step is *orthogonal*
+to the Rocq/Sail-ARM setup: nothing in sections 1–8 was modified (`sail-arm` is
+still at `1bf2e55`, the opam/Rocq 9.2.0 install is untouched). Reproducible
+instructions are in `installation.md` (part 2).
+
+**Versions in play**
+
+- Rust **1.98.1** / Cargo **1.98.1** (stable, rustup install — there was no Rust
+  on the box before).
+- Z3 **4.8.12** as the shared library (`apt install libz3-dev`,
+  `libz3.so.4` on this ARM64 machine). `isla-footprint` links this library.
+  Note: the box also has a standalone `z3` binary (4.13.0) under
+  `~/tools/sail/bin/z3` from an earlier Sail build; that does **not** provide the
+  dev library and is not used by the footprint tool.
+- Isla at commit `bf1a42f8a6097089fba4810fccc73dcc640267ab`
+  (≈ tag `esop22-320-gbf1a42f`).
+- isla-snapshots at commit `d8b31014643035a3b11071e56ef30001de3f52ab`.
+
+**What was run (in order)**
+
+```
+curl -fsSL https://sh.rustup.rs -o /tmp/opencode/rustup-init.sh
+sh /tmp/opencode/rustup-init.sh --profile default -y --default-toolchain stable
+# → rustc 1.98.1, cargo 1.98.1 (PATH: ~/.cargo/bin)
+
+sudo apt-get update -qq
+sudo apt-get install -y libz3-dev          # → libz3-dev 4.8.12-3.1build1 (arm64)
+
+git clone https://github.com/rems-project/isla.git
+git checkout bf1a42f8a6097089fba4810fccc73dcc640267ab
+
+git clone https://github.com/rems-project/isla-snapshots.git
+git checkout d8b31014643035a3b11071e56ef30001de3f52ab
+
+cd ~/rems/isla-snapshots
+gzip -dk armv9p4.ir.gz                      # Isla cannot read .ir.gz; 155,883,384 B
+
+cd ~/rems/isla
+cargo build --release                       # OK, ~3 m 49 s on 4×arm64, opt-level 3, panic=abort
+```
+
+**ARM 9.4 footprint smoke test (the goal)**
+
+From `~/rems/isla-snapshots`:
+
+```
+~/rems/isla/target/release/isla-footprint \
+  -A armv9p4.ir -C ~/rems/isla/configs/armv9p4.toml -i "add x0, x1, #3" -s
+```
+
+Exit code **0**, deterministic across runs (byte-identical output). The symbolic
+trace contains, as expected for `add x0, x1, #3`:
+
+```
+(read-reg |R1| nil v3949)
+(define-const v3950 ((_ extract 63 0) v3949))
+(define-const v3954 (bvadd ((_ zero_extend 64) v3950) #x00000000000000000000000000000003))
+...
+(write-reg |R0| nil v3972))
+```
+
+**Problems encountered (all resolved, none blocking)**
+
+1. **No Rust toolchain on the box** — installed with rustup (stable).
+2. **No Z3 dev libraries** (only a standalone binary) — `apt install libz3-dev`
+   provides `libz3.so`/`libz3.so.4`; `ldd isla-footprint` confirms it links
+   `/lib/aarch64-linux-gnu/libz3.so.4`. Isla's `z3-sys 0.5.0` finds it via
+   pkg-config.
+3. **`armv9p4.ir.gz` is gzipped** and Isla's model loader has no gzip support —
+   gunzipped to `armv9p4.ir`.
+4. **Benign warning** `No primop emulator_read_tag ... emulator_write_tag ...` —
+   the snapshot's Sail output uses two primops this Isla commit does not model;
+   execution completes anyway.
+5. **Cosmetic**: piping `isla-footprint` into an early-closing pipe (e.g.
+   `| head`) produces SIGABRT (exit 134) because the release profile sets
+   `panic = "abort"` and the writer hits EPIPE. Full runs to a file exit 0.
