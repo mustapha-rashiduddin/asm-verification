@@ -331,3 +331,105 @@ successfully (`… (successful)`, liARun tactic calls reported success).
 
 **Out of scope for this step:** generating examples (`make generate`),
 proving anything, and installing ArchSem — all intentionally not done.
+
+## 11. Islaris end-to-end: unaligned_accesses example (PASSED)
+
+Date: 2026-09-20, same machine, reusing the isolated environment from §10.
+Nothing was reinstalled or upgraded; the existing Sail/Rocq install and the
+`~/rems/{sail-arm,isla,isla-snapshots}` checkouts were not touched; ArchSem was
+not installed. Repro commands are in `installation.md` (part 3, §7).
+
+**Environment set for the run**
+
+```sh
+cd ~/rems/islaris
+eval $(opam env)
+export ISLA_REPO="$HOME/rems/isla-islaris"
+export ISLA_SNAP_REPO="$HOME/rems/isla-snapshots-islaris"
+export PATH="$HOME/.cargo/bin:$PWD/bin:$PATH"   # $HOME/.cargo/bin is required
+                                                # (islaris' bin/isla-footprint
+                                                #  runs `cargo run --release …`)
+```
+
+**Commands run + output**
+
+```
+make generate_unaligned_accesses
+```
+
+```
+[islaris] examples/unaligned_accesses.dump
+(thread 7) [isla-footprint] instructions/instr_str_unaligned.isla
+(thread 7) [coq-generation] instructions/instr_str_unaligned.v
+```
+
+exit 0. The frontend invoked the compatible Isla as
+`isla-footprint aarch64.ir -f isla_footprint_no_init -C …/aarch64_isla_coq.toml
+--simplify-registers --tree -s -x -i 200000f9 --reset-constraint
+'= (bvand R1 0xfff0000000000007) 0x0000000000000001'`
+— i.e. Isla processed the machine opcode `f9000020`
+(`str x0, [x1]`, little-endian bytes `20 00 00 f9`) under the constraint that
+`R1` is unaligned (bits 2-63 of the low tag bits pattern `0xfff0000000000007`
+equal `1`).
+
+Generated files (both under `~/rems/islaris/instructions/`):
+- `instr_str_unaligned.isla` (12,576 B, git-ignored) — the symbolic footprint
+  from Isla: reads `R1`/`R0`, raises `Exception_DataAbort`
+  (`ESR_EL2 = 0x960000e1`), writes `FAR_EL2`, `HPFAR_EL2`, and the exception
+  PSTATE.
+- `instr_str_unaligned.v` (13,762 B) — the Coq trace. It is **byte-identical**
+  to the checked-in version (md5 `ae2b4e0f…` on both), so the fresh run
+  reproduced the committed semantics deterministically.
+
+**Proof re-check against the freshly generated semantics**
+
+A plain `make` is a no-op here (dune hashes file *content*, and the regenerated
+`.v` is identical), so the `.vo`/`.glob` of the two relevant modules were
+deleted to force a genuine recheck:
+
+```
+rm -f _build/default/instructions/instr_str_unaligned.{vo,glob} \
+      _build/default/examples/unaligned_accesses.{vo,glob}
+make
+```
+
+Result (exit 0):
+
+```
+coqc instructions/instr_str_unaligned.{glob,vo}
+coqc examples/unaligned_accesses.{glob,vo}
+```
+
+So: the generated trace **compiles**, and the existing `str_unaligned` theorem
+(`examples/unaligned_accesses.v:200`) **checks** against it.
+
+**Admitted / assumptions**
+
+- `grep -n Admitted examples/unaligned_accesses.v instructions/instr_str_unaligned.v`
+  → no matches (no `Admitted`, no `admit`).
+- `Print Assumptions str_unaligned.` (via a throwaway `.v` compiled with the
+  install-tree `COQPATH`) printed:
+
+  ```
+  Closed under the global context
+  ```
+
+  i.e. the theorem depends on **no axioms** (accepting the section’s
+  `islaG`/`threadG` typeclass parameters, which are generalized on Qed).
+
+**Problems encountered**
+
+1. First `make generate_unaligned_accesses` attempt exited 127:
+   `Command [isla-footprint …] terminated with code 127`. Cause: `cargo` wasn't
+   on `PATH`, so the frontend's `bin/isla-footprint` (which shells out to
+   `cargo run --release --bin isla-footprint`) failed to start.
+   Fix: add `$HOME/.cargo/bin` to `PATH` (no reinstall needed).
+2. After generation, `make` did not recompile the trace: dune caches by content
+   digest and the file was identical. Resolving by removing the stale
+   `.vo`/`.glob` (documented above) is deliberate, not a workaround for a
+   broken build.
+
+**State after the step** (all verified): `~/rems/islaris` has no tracked
+modifications (regenerated `.v` identical; `.isla` is git-ignored);
+`~/rems/isla-islaris` clean; `default` opam switch still Rocq 9.2;
+`~/rems/{sail-arm,isla,isla-snapshots}` unchanged.

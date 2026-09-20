@@ -420,3 +420,73 @@ dune exec -- islaris --help     # prints the manual, exit 0
 `bin/isla-footprint`, plus `ISLA_REPO`/`ISLA_SNAP_REPO`), and proving the
 generated Coq (`make` builds the shipped examples already, but our own traces
 are future work). ArchSem was explicitly **not** installed.
+
+## 7. Run + verify the unaligned_accesses example (done, PASSED)
+
+Example: `examples/unaligned_accesses.dump` (machine instruction
+`f9000020  str x0, [x1]` with the constraint
+`= (bvand R1 0xfff0000000000007) 0x0000000000000001`). This runs the full
+Isla → Islaris(Coq trace) → coqc pipeline and re-checks the shipped
+`str_unaligned` theorem.
+
+Environment (reuse the isolated setup from §2–§4; extensions to §3):
+
+```sh
+cd ~/rems/islaris
+eval $(opam env)
+export ISLA_REPO="$HOME/rems/isla-islaris"
+export ISLA_SNAP_REPO="$HOME/rems/isla-snapshots-islaris"
+export PATH="$HOME/.cargo/bin:$PWD/bin:$PATH"   # NB: cargo must be on PATH — the
+                                                # frontend's bin/isla-footprint
+                                                # shells out to `cargo run`
+```
+
+Generate the instruction trace:
+
+```sh
+make generate_unaligned_accesses
+```
+
+Expect (exit 0):
+
+```
+[islaris] examples/unaligned_accesses.dump
+(thread 7) [isla-footprint] instructions/instr_str_unaligned.isla   ← Isla processed opcode f9000020
+(thread 7) [coq-generation] instructions/instr_str_unaligned.v      ← Islaris generated the Coq trace
+```
+
+Artifacts in `~/rems/islaris/instructions/`: `instr_str_unaligned.isla`
+(Isla footprint, git-ignored) and `instr_str_unaligned.v` (Coq trace,
+byte-identical to the checked-in copy — dune decides rebuilds by content, so a
+plain `make` after an identical regeneration is a no-op).
+
+Force a genuine re-check of the proof against the regenerated trace:
+
+```sh
+rm -f _build/default/instructions/instr_str_unaligned.{vo,glob} \
+      _build/default/examples/unaligned_accesses.{vo,glob}
+make
+```
+
+Success = these compile with exit 0:
+
+```
+coqc instructions/instr_str_unaligned.{glob,vo}
+coqc examples/unaligned_accesses.{glob,vo}
+```
+
+Checks that were run (all green on 2026-09-20):
+
+- `grep -n Admitted|admit examples/unaligned_accesses.v instructions/instr_str_unaligned.v` → none.
+- `Print Assumptions str_unaligned.` → `Closed under the global context` (no axioms).
+
+`Print Assumptions` recipe (one-liner, uses the same Coq 8.19 switch and the
+dune install tree):
+
+```sh
+eval $(opam env)
+echo 'From isla.examples Require Import unaligned_accesses.
+Print Assumptions str_unaligned.' > /tmp/pa.v
+COQPATH=$PWD/_build/install/default/lib/coq/user-contrib \
+  opam exec -- coqc /tmp/pa.v
+```
