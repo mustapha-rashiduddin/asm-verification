@@ -27,6 +27,7 @@
 
 Require Import isla.aarch64.aarch64.
 From isla.instructions.linear_search Require Import instrs.
+Require Import mod8addr_lemmas.
 
 (*PROOF_START*)
 
@@ -53,31 +54,35 @@ Definition linear_search_loop_spec : iProp Σ :=
   ⌜bv_unsigned base + bv_unsigned len * 8 < 2 ^ 52⌝ ∗
   ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝ ∗
   instr_pre 0x0000000010300020 (
-    ∃ (tmp : bv 64),
+    ∃ (i' tmp : bv 64),
     reg_col sys_regs ∗
     reg_col CNVZ_regs ∗
     "R0" ↦ᵣ RVal_Bits base ∗
     "R1" ↦ᵣ RVal_Bits len ∗
     "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i ∗
+    "R3" ↦ᵣ RVal_Bits i' ∗
     "R4" ↦ᵣ RVal_Bits tmp ∗
     "R30" ↦ᵣ RVal_Bits ret ∗
     bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i = bv_unsigned len⌝
+    ⌜bv_unsigned i' = bv_unsigned len⌝ ∗
+    ⌜bv_unsigned len = length data⌝ ∗
+    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
   ) ∗
   instr_pre 0x0000000010300028 (
-    ∃ (tmp : bv 64),
+    ∃ (i' tmp : bv 64),
     reg_col sys_regs ∗
     reg_col CNVZ_regs ∗
     "R0" ↦ᵣ RVal_Bits base ∗
     "R1" ↦ᵣ RVal_Bits len ∗
     "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i ∗
+    "R3" ↦ᵣ RVal_Bits i' ∗
     "R4" ↦ᵣ RVal_Bits tmp ∗
     "R30" ↦ᵣ RVal_Bits ret ∗
     bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i < bv_unsigned len⌝ ∗
-    ⌜data !! Z.to_nat (bv_unsigned i) = Some tgt⌝
+    ⌜bv_unsigned i' < bv_unsigned len⌝ ∗
+    ⌜bv_unsigned len = length data⌝ ∗
+    ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
+    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
   )
 .
 Arguments linear_search_loop_spec /.
@@ -155,6 +160,24 @@ Proof.
   apply carry_wrap_le; done || exact (bv_unsigned_in_range (64%N) a) || exact (bv_unsigned_in_range (64%N) b).
 Qed.
 
+Lemma no_carry_to_lt (a b : bv 64) :
+  bv_zero_extend 128
+    (bv_extract 0 64
+      (bv_add
+        (bv_add (bv_zero_extend 128 a)
+                (bv_zero_extend 128 (bv_not b)))
+        (BV 128 1))) =
+  bv_add
+    (bv_add (bv_zero_extend 128 a)
+            (bv_zero_extend 128 (bv_not b)))
+    (BV 128 1) →
+  (bv_unsigned a < bv_unsigned b)%Z.
+Proof.
+  intros Hnc.
+  bv_simplify_arith Hnc.
+  bv_solve.
+Qed.
+
 Lemma linear_search_loop :
   instr 0x0000000010300004 (Some a4) -∗
   instr 0x0000000010300008 (Some a8) -∗
@@ -169,7 +192,6 @@ Lemma linear_search_loop :
 Proof.
   iStartProof.
   liARun.
-
   Unshelve. all: prepare_sidecond.
   all: try bv_solve.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
@@ -179,26 +201,50 @@ Proof.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
   all: try bv_simplify_arith select (bv_extract _ _ _ = _).
   Unshelve.
-  - iPureIntro.
-    match goal with H : bv_zero_extend 128 _ ≠ _ |- _ =>
-      bv_simplify_arith H;
-      move: H => /carry_to_le Hge
+  all: try match goal with
+  | H : bv_zero_extend 128 _ = _ |- _ =>
+      have Hilt : (bv_unsigned i < bv_unsigned len)%Z :=
+        no_carry_to_lt i len H;
+      liARun
+  end.
+  Unshelve. all: prepare_sidecond.
+  all: try bv_solve.
+  all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
+  all: try bv_simplify_arith select (bv_extract _ _ _ = _).
+  - match goal with
+    | Hlookup : data !! ?idx = Some ?value |- data !! ?want = Some tgt =>
+        replace want with idx by bv_solve;
+        replace tgt with value by bv_solve;
+        exact Hlookup
     end.
-    have Hle : (bv_unsigned i ≤ bv_unsigned len)%Z by match goal with H : _ ≤ bv_unsigned len |- _ => exact H end.
-    lia.
-  - iApply find_in_context_mem_mapsto_semantic.
-    iExists (MKArray 64%N (bv_unsigned base) data).
-    iSimpl.
-    iFrame.
-    iSplit.
-    { bv_simplify.
-      match goal with |- ?G => idtac "MOD8-SIMPL-GOAL: " G end.
-      idtac "MOD8-SIMPL-END".
-      apply mod8_addr.
-      - iPureIntro.
-        match goal with H : _ = Z.of_N (bv_modulus (61%N)) - 1 - _ |- _ => idtac "never" end.
-        Fail idtac "mod8-bounds-need". }
-      Fail idtac "stop".
-    }
-    iExists (i :i:,).
+  - have Hnext :
+      Z.to_nat
+        (bv_unsigned (bv_extract 0 64 (bv_zero_extend 128 i) + 1)) =
+      S (Z.to_nat (bv_unsigned i)) by bv_solve.
+    rewrite Hnext in H9.
+    have Hpos :
+      (j < Z.to_nat (bv_unsigned i))%nat \/
+      j = Z.to_nat (bv_unsigned i) by lia.
+    destruct Hpos as [Hbefore | Heqj].
+    { exact (H4 j Hbefore). }
+    { subst j.
+      have Hlookup : data !! Z.to_nat (bv_unsigned i) = Some vmem.
+      { match goal with Hmem : data !! ?idx = Some vmem |- _ =>
+          replace (Z.to_nat (bv_unsigned i)) with idx by bv_solve;
+          exact Hmem
+        end. }
+      have Hne : vmem ≠ tgt by bv_solve.
+      intros Heq.
+      rewrite Hlookup in Heq.
+      injection Heq as Heq.
+      exact (Hne Heq). }
+  Unshelve.
+  all: try match goal with
+  | Hov : bv_zero_extend 128 _ ≠ _ |- bv_unsigned _ = bv_unsigned _ =>
+      bv_simplify_arith Hov;
+      move: Hov => /carry_to_le Hge;
+      lia
+  end.
+  all: try (iPureIntro; assumption).
+Qed.
 End proof.

@@ -28,7 +28,7 @@ Lemma bv_wrap_61_eq_len (i len : bv 64) :
 Proof.
   intros Hile Hlim.
   apply bv_wrap_small.
-  apply bv_wrap_le_len; auto.
+  apply (bv_wrap_le_len i len); auto.
 Qed.
 
 Lemma bv_wrap_52_eq_base (base i len : bv 64) :
@@ -39,12 +39,16 @@ Lemma bv_wrap_52_eq_base (base i len : bv 64) :
    bv_unsigned base + (bv_wrap (61%N) (bv_unsigned i)) * 8)%Z.
 Proof.
   intros Hm Hile Hlim.
+  have Hlenlim : (bv_unsigned len * 8 < 2 ^ 52)%Z.
+  { have Hbase := bv_unsigned_in_range (64%N) base. lia. }
   apply bv_wrap_small.
   split.
-  - have Hwge0 := bv_unsigned_nonneg base. have Hwge1 := bv_wrap_le_len i len Hile Hlim.
+  - have Hwge0 := bv_unsigned_in_range (64%N) base.
+    have Hwge1 := bv_wrap_in_range (61%N) (bv_unsigned i).
     lia.
-  - have Hw61 : (bv_wrap (61%N) (bv_unsigned i) = bv_unsigned i)%Z by apply bv_wrap_61_eq_len; auto.
-    have Hl : (bv_unsigned base + bv_unsigned i * 8 < 2 ^ 52)%Z by lia.
+  - have Hw61 : (bv_wrap (61%N) (bv_unsigned i) = bv_unsigned i)%Z by apply (bv_wrap_61_eq_len i len); auto.
+    rewrite Hw61.
+    change (bv_unsigned base + bv_unsigned i * 8 < 2 ^ 52)%Z.
     lia.
 Qed.
 
@@ -57,10 +61,11 @@ Lemma mod8_addr (base i len : bv 64) :
 Proof.
   intros Hm Hile Hlim.
   rewrite (bv_wrap_52_eq_base base i len Hm Hile Hlim).
-  have Hw : (bv_wrap (61%N) (bv_unsigned i) = bv_unsigned i)%Z by apply bv_wrap_61_eq_len; auto.
+  have Hlenlim : (bv_unsigned len * 8 < 2 ^ 52)%Z.
+  { have Hbase := bv_unsigned_in_range (64%N) base. lia. }
+  have Hw : (bv_wrap (61%N) (bv_unsigned i) = bv_unsigned i)%Z by apply (bv_wrap_61_eq_len i len); auto.
   rewrite Hw.
   have -> : (bv_unsigned base + bv_unsigned i * 8 - bv_unsigned base = bv_unsigned i * 8)%Z by lia.
-  rewrite Z.mul_comm.
   apply Z.mod_mul.
   compute. discriminate.
 Qed.
