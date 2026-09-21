@@ -97,6 +97,64 @@ Proof.
   bv_solve.
 Qed.
 
+(* The WP normalizes the C flag to the wrap-form inequality in (1); Lemma 3
+   (carry_to_le) turns that into [bv_unsigned len ≤ bv_unsigned i], which is
+   the Z-level reading of "the b.cs at 0x8 was taken". *)
+Lemma bv_wrap_64_neg_one (b : Z) :
+  (0 ≤ b)%Z →
+  (b < bv_modulus (64:N))%Z →
+  (bv_wrap (64%N) (- b - 1) = bv_modulus (64:N) - 1 - b)%Z.
+Proof.
+  intros Hb0 Hb1.
+  unfold bv_wrap.
+  symmetry. apply (Zmod_unique (- b - 1) (bv_modulus (64:N)) (-1%Z) (bv_modulus (64:N) - 1 - b)).
+  { split; lia. }
+  lia.
+Qed.
+
+Lemma bv_modulus_64_eq : bv_modulus (64:N) = (2 ^ 64)%Z.
+Proof. vm_compute. reflexivity. Qed.
+Lemma bv_modulus_128_eq : bv_modulus (128:N) = (2 ^ 128)%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma carry_wrap_le (a b : Z) :
+  (0 ≤ a < bv_modulus (64:N))%Z →
+  (0 ≤ b < bv_modulus (64:N))%Z →
+  (bv_wrap (64%N) (a + bv_wrap (64%N) (- b - 1) + 1) ≠
+   bv_wrap (128%N) (a + bv_wrap (64%N) (- b - 1) + 1))%Z →
+  (b ≤ a)%Z.
+Proof.
+  intros Ha Hb Hneq.
+  destruct Ha as [Ha0 Ha1]. destruct Hb as [Hb0 Hb1].
+  assert (Himm := bv_wrap_64_neg_one b Hb0 Hb1).
+  rewrite Himm in Hneq.
+  assert (Hstep : (a + (bv_modulus (64:N) - 1 - b) + 1 = a - b + bv_modulus (64:N))%Z).
+  { lia. }
+  rewrite Hstep in Hneq.
+  assert (Hm64 := bv_modulus_64_eq).
+  assert (Hm128 := bv_modulus_128_eq).
+  assert (Hsmall128 : (0 ≤ a - b + bv_modulus (64:N) < bv_modulus (128:N))%Z).
+  { subst. lia. }
+  rewrite (bv_wrap_small (128%N) (a - b + bv_modulus (64:N)) Hsmall128) in Hneq.
+  assert (Hne : (bv_wrap (64%N) (a - b + bv_modulus (64:N)) ≠ a - b + bv_modulus (64:N))%Z) by done.
+  destruct (Z_lt_ge_dec a b) as [Hab|Hba].
+  - exfalso. apply Hne.
+    apply bv_wrap_small.
+    split.
+    + lia.
+    + lia.
+  - by lia.
+Qed.
+
+Lemma carry_to_le (a b : bv 64) :
+  (bv_wrap (64%N) (bv_unsigned a + bv_wrap (64%N) (- bv_unsigned b - 1) + 1) ≠
+   bv_wrap (128%N) (bv_unsigned a + bv_wrap (64%N) (- bv_unsigned b - 1) + 1))%Z →
+  (bv_unsigned b ≤ bv_unsigned a)%Z.
+Proof.
+  intros Hneq.
+  apply carry_wrap_le; done || exact (bv_unsigned_in_range (64%N) a) || exact (bv_unsigned_in_range (64%N) b).
+Qed.
+
 Lemma linear_search_loop :
   instr 0x0000000010300004 (Some a4) -∗
   instr 0x0000000010300008 (Some a8) -∗
@@ -111,19 +169,36 @@ Lemma linear_search_loop :
 Proof.
   iStartProof.
   liARun.
+
+  Unshelve. all: prepare_sidecond.
+  all: try bv_solve.
+  all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
+  all: try bv_simplify_arith select (bv_extract _ _ _ = _).
   Unshelve. all: prepare_sidecond.
   all: try bv_solve.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
   all: try bv_simplify_arith select (bv_extract _ _ _ = _).
   Unshelve.
-  all: first [
-    match goal with H : bv_zero_extend _ _ ≠ _ |- _ => move: H => /overflow_to_le Hge; lia end |
-    liARun |
-    iPureIntro; intros j Hj; exfalso |
-    iSimpl; iExists (MKArray 64%N (bv_unsigned base) data); iFrame; bv_solve
-  ].
-all: match goal with |- ?G => idtac "RESID:" G end.
-Show Proof.
-Time Qed.
-
+  - iPureIntro.
+    match goal with H : bv_zero_extend 128 _ ≠ _ |- _ =>
+      bv_simplify_arith H;
+      move: H => /carry_to_le Hge
+    end.
+    have Hle : (bv_unsigned i ≤ bv_unsigned len)%Z by match goal with H : _ ≤ bv_unsigned len |- _ => exact H end.
+    lia.
+  - iApply find_in_context_mem_mapsto_semantic.
+    iExists (MKArray 64%N (bv_unsigned base) data).
+    iSimpl.
+    iFrame.
+    iSplit.
+    { bv_simplify.
+      match goal with |- ?G => idtac "MOD8-SIMPL-GOAL: " G end.
+      idtac "MOD8-SIMPL-END".
+      apply mod8_addr.
+      - iPureIntro.
+        match goal with H : _ = Z.of_N (bv_modulus (61%N)) - 1 - _ |- _ => idtac "never" end.
+        Fail idtac "mod8-bounds-need". }
+      Fail idtac "stop".
+    }
+    iExists (i :i:,).
 End proof.
