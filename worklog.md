@@ -433,3 +433,180 @@ So: the generated trace **compiles**, and the existing `str_unaligned` theorem
 modifications (regenerated `.v` identical; `.isla` is git-ignored);
 `~/rems/isla-islaris` clean; `default` opam switch still Rocq 9.2;
 `~/rems/{sail-arm,isla,isla-snapshots}` unchanged.
+
+## 12. Armored Corp's first owned routine: unsigned 64-bit linear search (PASSED)
+
+Date: 2026-09-21, same machine, same isolated Islaris environment (§10/§11).
+Scope: **our own** AArch64 source → assembler → actual opcodes → Isla → Islaris
+→ generated Coq traces → traces compile. No correctness proof yet, no
+`Admitted`, nothing installed/upgraded, ArchSem not installed.
+
+Pipeline in `armored/linear_search/`:
+
+```
+linear_search.S        our assembly source
+linear_search.objdump.txt   raw textual objdump (machine opcodes + mnemonic)
+linear_search.dump     the objdump text fed to the Islaris frontend (+ constraints)
+traces/                generated Coq instruction traces (a0.v … a2c.v, instrs.v, dune)
+```
+
+### 12.1 Exact assembly source (`armored/linear_search/linear_search.S`)
+
+```asm
+// Interface: x0 = &array[0] (uint64_t*), x1 = length, x2 = target.
+// Returns in x0: index of first match, or UINT64_MAX when none (incl. length 0).
+    .section .text
+    .globl linear_search
+    .type linear_search, %function
+linear_search:
+    mov     x3, xzr                 // index = 0
+loop:
+    cmp     x3, x1                  // index - length (unsigned)
+    b.hs    not_found               // index >= length  ->  return UINT64_MAX
+    ldr     x4, [x0, x3, lsl #3]   // x4 = array[index]
+    cmp     x4, x2                  // element - target
+    b.eq    found                   // element == target  ->  return index
+    add     x3, x3, #1              // index++
+    b       loop                    // goto loop
+not_found:
+    mvn     x0, xzr                 // x0 = UINT64_MAX = 0xffffffffffffffff
+    ret
+found:
+    mov     x0, x3                  // x0 = index
+    ret
+    .size linear_search, .-linear_search
+```
+
+### 12.2 Assembler command
+
+```bash
+cd armored/linear_search
+aarch64-linux-gnu-as -march=armv8.1-a linear_search.S -o linear_search.o
+```
+
+(the `-march=armv8.1-a` matches the Islaris `aarch64_isla_coq.toml`
+`assembler = "aarch64-linux-gnu-as -march=armv8.1-a"`.)
+
+### 12.3 Objdump command
+
+```bash
+aarch64-linux-gnu-objdump -d linear_search.o > linear_search.objdump.txt
+```
+
+### 12.4 Resulting instruction sequence / opcodes
+
+Address, big-endian display opcode, mnemonic (== what was decoded/footprinted):
+
+| addr | opcode  | instruction        |
+|------|---------|--------------------|
+| 0x00 | aa1f03e3| `mov x3, xzr`      |
+| 0x04 | eb01007f| `cmp x3, x1`       |
+| 0x08 | 540000c2| `b.cs/b.hs 0x20`   |
+| 0x0c | f8637804| `ldr x4, [x0, x3, lsl #3]` |
+| 0x10 | eb02009f| `cmp x4, x2`       |
+| 0x14 | 540000a0| `b.eq 0x28`        |
+| 0x18 | 91000463| `add x3, x3, #0x1` |
+| 0x1c | 17fffffa| `b 0x04` (loop)    |
+| 0x20 | aa3f03e0| `mvn x0, xzr`      |
+| 0x24 | d65f03c0| `ret`               |
+| 0x28 | aa0303e0| `mov x0, x3`       |
+| 0x2c | d65f03c0| `ret`               |
+
+`b.hs` assembles to the `b.cs` encoding (same condition, C == 1); objdump prints
+the `b.cs` alias with the `// b.hs, b.nlast` comment. The Islaris parser keeps
+the parse in the dump file verbatim, so the coq-trace names map to addresses
+`a0, a4, a8, ac, a10, a14, a18, a1c, a20, a24, a28, a2c`.
+
+### 12.5 Annotated dump → Islaris generation command
+
+Only `ldr` carries a `//@constraint:` in the dump (see §12.7). Generation, from
+`~/rems/islaris` (the isolated §10 env):
+
+```bash
+cd ~/rems/islaris
+eval $(opam env)                                  # switch /home/ubuntu/rems/islaris
+export ISLA_REPO="$HOME/rems/isla-islaris"
+export ISLA_SNAP_REPO="$HOME/rems/isla-snapshots-islaris"
+export PATH="$HOME/.cargo/bin:$PWD/bin:$PATH"
+dune exec -- islaris \
+  /home/ubuntu/asm-verification/armored/linear_search/linear_search.dump \
+  -j 8 -o instructions/linear_search --coqdir=isla.instructions.linear_search
+rm instructions/instrs.v                          # clean up the driver list (same as Makefile)
+```
+
+Exit **0**. Log shows `[isla-footprint]` for all 12 instructions and
+`[coq-generation]` for all 12 traces (the frontend ran the compatible
+`isla-footprint aarch64.ir` per opcode via `bin/isla-footprint`, which shells
+out to `cargo run --release --bin isla-footprint` in `~/rems/isla-islaris`).
+
+### 12.6 Generated trace files
+
+`~/rems/islaris/instructions/linear_search/`, copied into
+`armored/linear_search/traces/`:
+
+- 12 per-instruction Coq traces: `a0.v a4.v a8.v ac.v a10.v a14.v a18.v a1c.v
+  a20.v a24.v a28.v a2c.v`
+- the module list `instrs.v`
+- the generated `dune` (coq.theory `isla.instructions.linear_search`)
+- (plus the git-ignored intermediate `.isla` footprints in the islaris tree)
+
+Sample semantics captured: `a8.v` = `b.cs` as a tree with two leaves (taken →
+PC + 0x18 = 0x20; not taken → PC + 4); `ac.v` = `ldr` reads `R3`/`R0`, folds the
+constraint into an `Assume`, builds the effective address, and ends with
+`ReadMem … 8` and `WriteReg "R4" …`.
+
+### 12.7 All traces compiled (PASSED)
+
+In the islaris dune project:
+
+```bash
+cd ~/rems/islaris && eval $(opam env) && dune build instructions/linear_search/
+```
+
+exit 0 — `coqc` on `a0 a4 a8 ac a10 a14 a18 a1c a20 a24 a28 a2c instrs` all
+`(successful)`. Independent re-compile of the **committed copies** with the
+recorded command:
+
+```bash
+export COQPATH=$PWD/_build/install/default/lib/coq/user-contrib
+coqc -R <repo>/armored/linear_search/traces isla.instructions.linear_search <file>.v
+```
+
+`coqc` on all 13 files (12 traces + `instrs.v`) exit 0. `grep -n
+'Admitted\|admit'` over the generated traces → no matches.
+
+### 12.8 Constraints required and why
+
+One `//@constraint:` on the loop's `ldr`:
+
+```
+//@constraint: = (bvand (bvadd R0 (bvmul R3 0x0000000000000008)) 0xfff0000000000007) 0x0000000000000000
+```
+
+- `bvadd R0 (bvmul R3 8)` is the load effective address (`[x0, x3, lsl #3]`).
+- mask `0xfff0000000000007` forces the address's top-byte-ignore bits
+  (`0xfff0000000000000`, MTE-related) and low 3 bits (8-byte alignment) to 0.
+- This is what the ARM memory model's `MemAddr` checks; without it the load is
+  unaligned/TBI-nonzero and the footprint fails. Same pattern as the shipped
+  `binary_search.dump` `ldr` (register-offset 8-byte load).
+- All other instructions (register ALU, branches, `ret`) need **no** constraint,
+  matching the shipped memcpy/binary_search examples.
+
+### 12.9 Problems and fixes
+
+1. `coqc`/`opam exec` PATH gotcha (recorded for others): with a local switch
+   whose id is `…/islaris`, `eval $(opam env --switch=…)` prints a NOTE and may
+   leave `coqc` off `PATH`; and bare `opam exec -- coqc` uses the `default`
+   switch (Rocq 9.2, no `coqc`). Fix: `eval $(opam env --set-switch
+   --switch=/home/ubuntu/rems/islaris)` (or export `OPAMSWITCH=...`) and call
+   `coqc` directly.
+2. The repo is not a dune project, so traces are verified two ways: the dune
+   build inside `~/rems/islaris`, and standalone `coqc -R` on the committed
+   copies (identical bytes).
+3. `instrs.v` cannot be compiled alone with `-Q` (its sibling imports live
+   under the `isla.instructions.linear_search` logical root) — use `-R` (the
+   dune `(coq.theory … isla.instructions.linear_search)` sets the same root).
+
+**State after the step**: all new files are in the repo under
+`armored/linear_search/`; the untouched islaris/isla/sail/Rocq installs and
+checkouts are unchanged; ArchSem not installed; no proof attempted.

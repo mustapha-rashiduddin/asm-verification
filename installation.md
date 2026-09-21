@@ -490,3 +490,74 @@ Print Assumptions str_unaligned.' > /tmp/pa.v
 COQPATH=$PWD/_build/install/default/lib/coq/user-contrib \
   opam exec -- coqc /tmp/pa.v
 ```
+
+## 8. Running the frontend on YOUR OWN dump (part 3 supplement)
+
+This is the recipe used for `armored/linear_search` in the worklog §12: an
+object dump of our own hand-written assembly (rather than a shipped example),
+through the same Isla → Islaris → Coq pipeline.
+
+A `.dump` file is just textual objdump output: label lines
+(`0000000000000000 <linear_search>:`) and instruction lines
+(`   0:\taa1f03e3 \tmov\tx3, xzr`), with optional `//@constraint:` /
+`//@spec:` / `//@base_address:` comment annotations attached to the instruction
+that follows them. objdump lines of the form `path: file format …` and
+`Disassembly of section .text:` must be removed (the parser treats any line
+containing a `:` as an instruction line). Do **not** keep stray `//` comment
+text on instruction lines in a way that contains `/` literally … the parser
+splits instruction text on `/` for its comment field, which objdump's
+`// b.hs, b.nlast` style suffixes already use — that is fine, just don't add
+more.
+
+Constraints worth knowing:
+
+- The ARM model checks `MemAddr` for every load/store. For a memory
+  instruction, add `//@constraint:` asserting the effective address's
+  top-byte-ignore bits and `size-1` low alignment bits are zero. Example from
+  the register-offset scaled load `ldr x4, [x0, x3, lsl #3]` (address
+  `R0 + R3*8`, 8 bytes, alignment mask `0x7`):
+
+  ```
+  //@constraint: = (bvand (bvadd R0 (bvmul R3 0x0000000000000008)) 0xfff0000000000007) 0x0000000000000000
+  ```
+
+- Register ALU instructions, branches (`b.cs`/`b.hs`, `b.eq`, `b`,
+  `cbz`, …) and `ret` need no constraint; Isla footprints them directly
+  (`--tree` gives both branch outcomes). `b.hs` assembles to the `b.cs`
+  encoding.
+
+Generate traces for your own routine (reuse the §2–§4 environment; run from
+`~/rems/islaris`):
+
+```sh
+cd ~/rems/islaris
+eval $(opam env)
+export ISLA_REPO="$HOME/rems/isla-islaris"
+export ISLA_SNAP_REPO="$HOME/rems/isla-snapshots-islaris"
+export PATH="$HOME/.cargo/bin:$PWD/bin:$PATH"
+
+dune exec -- islaris /path/to/myroutine.dump -j 8 \
+  -o instructions/myroutine --coqdir=isla.instructions.myroutine
+rm instructions/instrs.v   # the driver list generated at the top level; unused here
+```
+
+Compile the generated traces (they live in `instructions/myroutine/` with a
+generated `dune` declaring the `isla.instructions.myroutine` theory):
+
+```sh
+dune build instructions/myroutine/
+```
+
+Independent re-check on the copies kept in a non-dune repo:
+
+```sh
+export COQPATH=$PWD/_build/install/default/lib/coq/user-contrib   # from ~/rems/islaris
+coqc -R <traces-dir> isla.instructions.myroutine a0.v   # … each trace file, then instrs.v
+```
+
+Use `-R` (not `-Q`) for `instrs.v`: it `Require Export`s its sibling trace
+modules under the `isla.instructions.myroutine` logical root, and the generated
+`dune` maps that same root. Also note that if the current opam switch is not the
+islaris one, `eval $(opam env --switch=/home/ubuntu/rems/islaris)` may fail to
+put `coqc` on `PATH`; append `--set-switch` (or `export OPAMSWITCH=…`) and call
+`coqc` directly rather than through `opam exec`.
