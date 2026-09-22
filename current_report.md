@@ -41,7 +41,7 @@ changed in this step except the reported top-level blocker.
 ## Top-level theorem: exact residual goals (blocker)
 
 After that manual split and `liARun` rounds, exactly two focused goals remain,
-both on the **not-found** path, and both are unrecoverable:
+both on the **not-found** path:
 
 1. `find_in_context (FindInstrKind (bv_unsigned ret) true) …`
    (the `ret` at `0x24` looking up the caller continuation). `c_call` grants a
@@ -63,10 +63,11 @@ both on the **not-found** path, and both are unrecoverable:
    re-proved as side-conditions and consumed during the epilogue run and are no
    longer in context when the obligation is generated, so it cannot be proven.
 
-In short: Islaris's `c_call`/`find_in_context`/`subsume` machinery supports
-single-exit / single-`ret` c wrappers only; `linear_search` has two exits and
-two `ret`s. This is a tool-pattern gap, not a spec mistake (both exit
-continuations verify their full functional facts, see below).
+Current evidence suggests the shipped `c_call` / `find_in_context` / `subsume`
+automation does not directly handle this two-exit / two-`ret` proof shape.
+That is the working hypothesis for the next attempt; it is not yet established
+whether the right fix is a proof restructuring, a small helper/instance, or a
+framework extension. The specification itself has not been shown wrong.
 
 ## Fragment retained in the file (for the next attempt)
 
@@ -80,11 +81,10 @@ continuations verify their full functional facts, see below).
   Time Abort.
 ```
 
-Suggested next direction: bias one exit so both are discharged through a single
-`c_call_ret` continuation (e.g. prove the not-found and found `ret`s with a
-shared/shared-guarded continuation), or extend Islaris with a
-`Subsume (instr …) (instr_pre …)` / persistent `c_call_ret` variant — both
-outside the scope of this session.
+Suggested next direction: first try a proof restructuring that shares the
+caller-return continuation across both epilogues while preserving each exit's
+functional facts. Only if that fails should we consider adding a small
+`Subsume`/continuation helper or changing Islaris infrastructure.
 
 ## Architectural Fix (loop theorem, intact)
 
