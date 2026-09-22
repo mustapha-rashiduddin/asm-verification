@@ -118,6 +118,28 @@ context**.
 
 ## Next Scope
 
-Nothing pending. Termination of the loop remains out of scope (this is a Hoare
-proof of partial correctness of the machine-code `linear_search` function and
-its two exits).
+One proof-engineering point remains before termination work.
+
+`linear_search_loop` now proves
+`instr_body 0x10300004 linear_search_loop_spec_sep`, while the top-level
+`linear_search` theorem assumes
+`□ instr_pre 0x10300004 linear_search_loop_spec`.
+
+Those are different loop specs. The proved bridge
+
+`linear_search_loop_spec_sep_to_and :
+  linear_search_loop_spec_sep -∗ linear_search_loop_spec`
+
+only goes from the SEP-exit version to the additive-exit version, and it is not
+currently used to close the recursive/top-level composition. Therefore the
+current `Qed`s establish the loop theorem and the outer wrapper theorem
+separately, but we should not yet claim that the recursive loop proof and the
+top-level wrapper have been tied together into one closed whole-function proof
+under the normal Islaris recursion/adequacy pattern.
+
+Next task: prove or exhibit the exact composition step, without weakening either
+spec, adding assumptions, changing machine code, or duplicating linear
+resources. Only after that is closed should termination be tackled.
+
+Termination itself remains unproved and out of scope for the current partial-
+correctness result.
