@@ -638,3 +638,33 @@ No assembly or generated instruction traces were changed for this milestone.
 
 The live state of the outer `linear_search` theorem, including any blocker or
 current hypothesis, belongs in `current_report.md`.
+
+## 14. Top-level linear_search theorem proven (PASSED)
+
+Date: 2026-09-22, same machine, same Islaris environment.
+
+`armored/linear_search/linear_search_proof.v` now proves BOTH
+`linear_search_loop` and the top-level `linear_search`
+(`instr_body 0x10300000 (linear_search_spec stack_size)`) with genuine
+`Time Qed`s, zero residual/shelved goals. Clean `coqc` exits 0; `coqchk`
+exits 0; `Print Assumptions` on both theorems (and on
+`linear_search_loop_spec_sep_to_and`) reports **Closed under the global
+context**. No `Admitted`/`admit`/`Axiom`/`Abort`, no assembly or
+generated-trace changes, no termination claim.
+
+What fixed the two-`ret` c wrapper blocker:
+
+- The loop invariant `linear_search_loop_spec` records its two exit
+  obligations with the additive `∧`, so the single `c_call_ret` continuation
+  is available to both epilogues; the top-level reduces to the two return-post
+  pure disjuncts and both are proved directly
+  (`bv_solve`, `to_nat_of_nat_id`, `lookup_ge_None_2`, exit prefix facts).
+- The loop body runs against the SEP-exit twin
+  `linear_search_loop_spec_sep` (the previously-closed shape), since the
+  `FindInstrKind` finder only descends SEP-conjuncts. The bridge
+  `linear_search_loop_spec_sep_to_and` (`∗ → ∧`, via `star_and : P ∗ Q -∗ P ∧ Q`)
+  shows the `∗` version is at least as strong and never duplicates linear
+  resources.
+
+No Islaris/framework changes were made; the specification is unchanged beyond
+the `∧`-vs-`∗` bookkeeping of the two exits.

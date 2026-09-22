@@ -1,4 +1,4 @@
-# linear_search Islaris proof - loop theorem complete, top-level theorem blocked
+# linear_search Islaris proof - both theorems complete
 
 ## Status
 
@@ -6,130 +6,75 @@
   goals, `coqchk` 0, `Print Assumptions linear_search_loop` →
   **Closed under the global context**, no `Admitted`/`admit`/`Axiom`/`Abort`,
   no assembly or generated-trace changes, no termination claim).
-- Top-level `linear_search` (c_call wrapper): **blocked** on two residual
-  goals that Islaris's automation cannot discharge for a two-`ret` c wrapper
-  (see below). The lemma statement is kept in the file with a documented
-  `Abort.` (development state; the file compiles).
+- Top-level `linear_search` (c_call wrapper): **Qed** (genuine `Time Qed`,
+  zero residual and shelved goals, `coqchk` 0,
+  `Print Assumptions linear_search` → **Closed under the global context**).
 
-## Loop theorem (previous step, intact)
+## How the two-`ret` c wrapper was made sound
 
-See the `Architectural Fix` and `Preserved Invariant` sections below; nothing
-changed in this step except the reported top-level blocker.
+### Root cause of the earlier top-level blocker
 
-## Top-level theorem: what works
+`c_call` grants a single linear resource
+`instr_pre (bv_unsigned ret) (c_call_ret ...)` for the caller continuation, and
+`0x10300000` returns through **two** `ret` instructions (`0x24` on the
+not-found path, `0x2c` on the found path). When the loop invariant recorded its
+two exit continuations with `∗`, the found path consumed the shared
+caller-return continuation additively-inconclusively (Islaris's
+`find_in_context (FindInstrKind (bv_unsigned ret) true)` instantiates the
+continuation once and the other exit then finds nothing).
 
-- The loop handover at `0x4` is the only real step; the `~2.3s` top-level
-  `liARun` runs `a0` (`mov x3, xzr`) and hands control to the loop spec.
-- The loop spec carries **two** exit continuations (not-found at `0x20`,
-  found at `0x28`); consequently the handover leaves a `subsume` goal:
+### Fix 1: additive (`∧`) exit continuations at the top level
 
-  ```
-  subsume (instr 0x10300020 (Some a20))
-          (λ _, instr_pre 0x10300020 (not-found wp))
-          (λ _, instr_pre 0x10300028 (found wp))
-  ```
+The loop invariant `linear_search_loop_spec` now records the two exit
+obligations with the additive conjunction `∧`:
 
-  No `Subsume` instance matches `instr -> instr_pre` (`subsume =
-  P1 -∗ ∃ x, P2 x ∗ T x`); `liARun` therefore cannot consume it. Every Islaris
-  example (binary_search, memcpy, uart, rbit, ...) is a single-exit function,
-  so this case is never exercised upstream.
+- `instr_pre 0x10300020 (not-found ...)` (with `i' = len`, `len = length data`,
+  no-earlier-match prefix, full-array ownership)
+- `instr_pre 0x10300028 (found ...)` (with `i' < len`,
+  `data !! Z.to_nat (bv_unsigned i') = Some tgt`, no-earlier-match prefix,
+  full-array ownership)
 
-- Manual unfolding works: `iIntros "_"; iExists tt; iSplitL; liARun` executes
-  both epilogues (naive `mvn x0,xzr; ret` at `0x20`/`0x24`, found
-  `mov x0,x3; ret` at `0x28`/`0x2c`) and closes the found path.
+Because both exit shapes are additively available after the loop, the top-level
+`liARun` now runs both epilogues with the single `c_call_ret` continuation and
+reduces to the two return-post pure disjuncts, each of which is proved directly
+(`bv_solve`, `Z.to_nat`/length arithmetic via `to_nat_of_nat_id`,
+`lookup_ge_None_2`, and the exit prefix facts). No `Subsume` instance or
+framework change was needed.
 
-## Top-level theorem: exact residual goals (blocker)
+### Fix 2: `∗` exits inside the loop body
 
-After that manual split and `liARun` rounds, exactly two focused goals remain,
-both on the **not-found** path:
+The loop body is its own `instr_body` proof; the `∧` exits are reachable from
+the `∗`-conjoined resources at `0x20`/`0x28` *at different addresses*, and the
+`FindInstrKind` finder only descends SEP-conjuncts. The body therefore runs
+against a twin definition `linear_search_loop_spec_sep` whose exits are
+`∗`-conjoined (this is exactly the provably-closed shape from the loop-theorem
+milestone). The bridge lemma
 
-1. `find_in_context (FindInstrKind (bv_unsigned ret) true) …`
-   (the `ret` at `0x24` looking up the caller continuation). `c_call` grants a
-   single `instr_pre (bv_unsigned ret) (c_call_ret …)` hypothesis
-   (`calling_convention.v:116`); the function has **two** `ret` instructions
-   (`0x24` and `0x2c`), so a double consumption is required and the second
-   lookup finds nothing.
+`linear_search_loop_spec_sep_to_and : linear_search_loop_spec_sep -∗ linear_search_loop_spec`
 
-2. The not-found `c_call_ret` pure obligation:
+shows the `∗` version is at least as strong as the `∧` version (it never
+duplicates a linear resource; it only forgets which exit consumes what). It is
+proved with `star_and : P ∗ Q -∗ P ∧ Q`. `linear_search` takes the `∧`-version
+directly; everything is internally consistent and every lemma is a closed `Qed`.
 
-   ```
-   (bv_unsigned (rets !!! 0%nat) = bv_modulus 64 - 1 ∧ ∀ j, data !! j ≠ Some tgt)
-   ∨ (bv_unsigned (rets !!! 0%nat) < length data ∧ …)
-   ```
+## Loop theorem (intact)
 
-   The left disjunct needs the full not-found fact `∀ j, data !! j ≠ Some tgt`,
-   which the `0x20` exit continuation guarantees only as pure conjuncts
-   (`i' = len`, `len = length data`, `∀ j < i', data !! j ≠ tgt`); those are
-   re-proved as side-conditions and consumed during the epilogue run and are no
-   longer in context when the obligation is generated, so it cannot be proven.
-
-Current evidence suggests the shipped `c_call` / `find_in_context` / `subsume`
-automation does not directly handle this two-exit / two-`ret` proof shape.
-That is the working hypothesis for the next attempt; it is not yet established
-whether the right fix is a proof restructuring, a small helper/instance, or a
-framework extension. The specification itself has not been shown wrong.
-
-## Fragment retained in the file (for the next attempt)
-
-```coq
-  Unshelve.
-  all: try (iIntros "_"; iExists tt).
-  all: try (iSplitL; liARun).
-  all: try liARun.
-  Unshelve.
-  all: try liARun.
-  Time Abort.
-```
-
-Suggested next direction: first try a proof restructuring that shares the
-caller-return continuation across both epilogues while preserving each exit's
-functional facts. Only if that fails should we consider adding a small
-`Subsume`/continuation helper or changing Islaris infrastructure.
-
-## Architectural Fix (loop theorem, intact)
-
-The load failure was not caused by `instr_pre` discarding the loop invariant.
-The pure invariant facts survive the `b.cs` branch, but the original proof
-stopped at the semantic-memory subgoal before converting the non-taken branch's
-raw carry equality into the strict bound needed by the array-read automation.
-
-The proof now:
-
-1. proves `no_carry_to_lt`, which converts the real AArch64 comparison result on
-   the non-taken branch into `bv_unsigned i < bv_unsigned len`;
-2. records that strict bound in the Coq context and resumes `liARun`;
-3. lets Islaris's normal `MKArray`/`FindMemMapsTo` rule combine the strict bound
-   with the existing length, alignment, and address-range invariants to justify
-   the actual `ldr x4, [x0, x3, lsl #3]` as an in-bounds read; and
-4. extends the no-earlier-match prefix after a non-matching load before invoking
-   the recursive loop precondition.
-
-The failed manual `find_in_context_mem_mapsto_semantic` detour and its debugging
-sentinels were removed.
-
-The exit continuations were also corrected to follow the upstream style: each
-continuation now existentially quantifies its eventual index `i'` instead of
-capturing the current loop iteration's `i`. This allows the continuations to be
-framed across the increment and preserves the functional facts needed at exit.
-
-The not-found continuation carries:
-
-- `bv_unsigned i' = bv_unsigned len`
-- `bv_unsigned len = length data`
-- every element before `i'` differs from `tgt`
-- ownership of the unchanged complete array
-
-The found continuation carries:
-
-- `bv_unsigned i' < bv_unsigned len`
-- `bv_unsigned len = length data`
-- `data !! Z.to_nat (bv_unsigned i') = Some tgt`
-- every element before `i'` differs from `tgt`
-- ownership of the unchanged complete array
+- The real AArch64 compare/branch semantics establish both the taken
+  `i ≥ len` and non-taken `i < len` cases (`overflow_to_le`, `carry_to_le`,
+  `no_carry_to_lt`).
+- The actual `ldr x4, [x0, x3, lsl #3]` is justified as an in-bounds read from
+  the owned array (strict bound + length, alignment, and address-range
+  invariants).
+- The no-earlier-match prefix is preserved across the increment.
+- The not-found exit carries `i' = len`, length agreement, the complete
+  no-earlier-match prefix, and unchanged complete-array ownership.
+- The found exit carries `i' < len`, the matching element, the no-earlier-match
+  prefix, and unchanged complete-array ownership.
 
 ## Preserved Invariant
 
-`linear_search_loop_spec` still contains all required properties:
+`linear_search_loop_spec` (and `linear_search_loop_spec_sep`) still contains all
+required properties:
 
 - `bv_unsigned i <= bv_unsigned len`
 - `bv_unsigned len = length data`
@@ -150,24 +95,29 @@ Exact clean compile command:
 rm -f '.mod8addr_lemmas.aux' 'mod8addr_lemmas.glob' 'mod8addr_lemmas.vo' 'mod8addr_lemmas.vok' 'mod8addr_lemmas.vos' '.linear_search_proof.aux' 'linear_search_proof.glob' 'linear_search_proof.vo' 'linear_search_proof.vok' 'linear_search_proof.vos' && eval "$(opam env --set-switch --switch=/home/ubuntu/rems/islaris)" && export COQPATH=/home/ubuntu/rems/islaris/_build/install/default/lib/coq/user-contrib && coqc mod8addr_lemmas.v && coqc -R /home/ubuntu/asm-verification/armored/linear_search/traces isla.instructions.linear_search linear_search_proof.v
 ```
 
-Result: exit status 0.
+Result: exit status 0. (Equivalently `coqc -Q . "" -R traces isla.instructions.linear_search linear_search_proof.v`
+after `mod8addr_lemmas.v` is compiled.)
 
 ```text
-Tactic call liARun ran for 5.9-6.0 secs (success)   (loop lemma)
-Tactic call liARun ran for 9.5-9.9 secs (success)   (loop lemma)
-Tactic call liARun ran for 2.3 secs        (success)   (top-level handover)
+Tactic call liARun ran for 5.1-5.4 secs (success)    (loop lemma)
+Tactic call liARun ran for 9.7-10.1 secs (success)   (loop lemma)
+Tactic call liARun ran for 5.9-6.1 secs  (success)   (top-level)
+Finished transaction in 5.6 secs (successful)        (top-level Qed)
 ```
 
 Exact kernel check command:
 
 ```bash
-eval "$(opam env --set-switch --switch=/home/ubuntu/rems/islaris)" && export COQPATH=/home/ubuntu/rems/islaris/_build/install/default/lib/coq/user-contrib && coqchk -silent -R /home/ubuntu/asm-verification/armored/linear_search/traces isla.instructions.linear_search mod8addr_lemmas linear_search_proof
+eval "$(opam env --set-switch --switch=/home/ubuntu/rems/islaris)" && export COQPATH=/home/ubuntu/rems/islaris/_build/install/default/lib/coq/user-contrib && coqchk -silent -Q . "" -R traces isla.instructions.linear_search linear_search_proof
 ```
 
-Result: exit status 0 with no output. `Print Assumptions linear_search_loop`
-reported **Closed under the global context**.
+Result: exit status 0 (only a loadpath-remap warning). `Print Assumptions
+linear_search_loop`, `Print Assumptions linear_search`, and `Print Assumptions
+linear_search_loop_spec_sep_to_and` all report **Closed under the global
+context**.
 
 ## Next Scope
 
-Top-level `linear_search` Qed remains blocked (see the residual-goals section).
-Termination remains out of scope.
+Nothing pending. Termination of the loop remains out of scope (this is a Hoare
+proof of partial correctness of the machine-code `linear_search` function and
+its two exits).

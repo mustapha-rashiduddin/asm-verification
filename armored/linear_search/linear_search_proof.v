@@ -53,7 +53,66 @@ Definition linear_search_loop_spec : iProp Σ :=
   ⌜bv_unsigned base `mod` 8 = 0⌝ ∗
   ⌜bv_unsigned base + bv_unsigned len * 8 < 2 ^ 52⌝ ∗
   ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝ ∗
-  instr_pre 0x0000000010300020 (
+  (instr_pre 0x0000000010300020 (
+    ∃ (i' tmp : bv 64),
+    reg_col sys_regs ∗
+    reg_col CNVZ_regs ∗
+    "R0" ↦ᵣ RVal_Bits base ∗
+    "R1" ↦ᵣ RVal_Bits len ∗
+    "R2" ↦ᵣ RVal_Bits tgt ∗
+    "R3" ↦ᵣ RVal_Bits i' ∗
+    "R4" ↦ᵣ RVal_Bits tmp ∗
+    "R30" ↦ᵣ RVal_Bits ret ∗
+    bv_unsigned base ↦ₘ∗ data ∗
+    ⌜bv_unsigned i' = bv_unsigned len⌝ ∗
+    ⌜bv_unsigned len = length data⌝ ∗
+    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
+  ) ∧
+  instr_pre 0x0000000010300028 (
+    ∃ (i' tmp : bv 64),
+    reg_col sys_regs ∗
+    reg_col CNVZ_regs ∗
+    "R0" ↦ᵣ RVal_Bits base ∗
+    "R1" ↦ᵣ RVal_Bits len ∗
+    "R2" ↦ᵣ RVal_Bits tgt ∗
+    "R3" ↦ᵣ RVal_Bits i' ∗
+    "R4" ↦ᵣ RVal_Bits tmp ∗
+    "R30" ↦ᵣ RVal_Bits ret ∗
+    bv_unsigned base ↦ₘ∗ data ∗
+    ⌜bv_unsigned i' < bv_unsigned len⌝ ∗
+    ⌜bv_unsigned len = length data⌝ ∗
+    ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
+    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
+  ))
+.
+Arguments linear_search_loop_spec /.
+Global Instance : LithiumUnfold (linear_search_loop_spec) := I.
+
+(* Inside the loop body the two exit [instr_pre]s are reached as SEPARATE
+   linear resources at two different addresses, so the body proof runs them
+   as a conjunction under [∗].  The top-level caller instead receives them as
+   the additive [∧] (both continuation shapes are simultaneously available for
+   whichever exit actually runs).  [linear_search_loop_spec_sep] is the
+   SEP-version used by the body; [linear_search_loop_spec_sep_to_and] shows it
+   is at least as strong as the additive version (no linear resources are
+   duplicated). *)
+Definition linear_search_loop_spec_sep : iProp Σ :=
+  ∃ (base len tgt i tmp ret : bv 64) (data : list (bv 64)),
+  reg_col sys_regs ∗
+  reg_col CNVZ_regs ∗
+  "R0" ↦ᵣ RVal_Bits base ∗
+  "R1" ↦ᵣ RVal_Bits len ∗
+  "R2" ↦ᵣ RVal_Bits tgt ∗
+  "R3" ↦ᵣ RVal_Bits i ∗
+  "R4" ↦ᵣ RVal_Bits tmp ∗
+  "R30" ↦ᵣ RVal_Bits ret ∗
+  bv_unsigned base ↦ₘ∗ data ∗
+  ⌜bv_unsigned i ≤ bv_unsigned len⌝ ∗
+  ⌜bv_unsigned len = length data⌝ ∗
+  ⌜bv_unsigned base `mod` 8 = 0⌝ ∗
+  ⌜bv_unsigned base + bv_unsigned len * 8 < 2 ^ 52⌝ ∗
+  ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝ ∗
+  (instr_pre 0x0000000010300020 (
     ∃ (i' tmp : bv 64),
     reg_col sys_regs ∗
     reg_col CNVZ_regs ∗
@@ -83,10 +142,55 @@ Definition linear_search_loop_spec : iProp Σ :=
     ⌜bv_unsigned len = length data⌝ ∗
     ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
     ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
-  )
+  ))
 .
-Arguments linear_search_loop_spec /.
-Global Instance : LithiumUnfold (linear_search_loop_spec) := I.
+Arguments linear_search_loop_spec_sep /.
+Global Instance : LithiumUnfold (linear_search_loop_spec_sep) := I.
+
+Lemma star_and (P Q : iProp Σ) : P ∗ Q -∗ P ∧ Q.
+Proof. iIntros "[HP HQ]". iSplit; iAssumption. Qed.
+
+Lemma to_nat_of_nat_id (n : nat) : Z.to_nat (Z.of_nat n) = n.
+Proof. zify; lia. Qed.
+
+Lemma bv_unsigned_or_zero (x : bv 64) :
+  bv_unsigned (bv_or (BV 64 0) x) = bv_unsigned x.
+Proof. bv_simplify_arith. bv_solve. Qed.
+
+Lemma linear_search_loop_spec_sep_to_and :
+  linear_search_loop_spec_sep -∗ linear_search_loop_spec.
+Proof.
+  iIntros "H".
+  iDestruct "H" as (base len tgt i tmp ret data) "H".
+  iDestruct "H" as "[Hsys Hrest]".
+  iDestruct "Hrest" as "[Hcnvz Hrest]".
+  iDestruct "Hrest" as "[H0 Hrest]".
+  iDestruct "Hrest" as "[H1 Hrest]".
+  iDestruct "Hrest" as "[H2 Hrest]".
+  iDestruct "Hrest" as "[H3 Hrest]".
+  iDestruct "Hrest" as "[H4 Hrest]".
+  iDestruct "Hrest" as "[H30 Hrest]".
+  iDestruct "Hrest" as "[Hmem Hrest]".
+  iDestruct "Hrest" as "[%Hile Hrest]".
+  iDestruct "Hrest" as "[%Hlen Hrest]".
+  iDestruct "Hrest" as "[%Hmod Hrest]".
+  iDestruct "Hrest" as "[%Hsz Hrest]".
+  iDestruct "Hrest" as "[%Hpre Hexit]".
+  iDestruct "Hexit" as "[Hnaive Hfound]".
+  iExists base, len, tgt, i, tmp, ret, data.
+  iSplitL "Hsys"; first done.
+  iSplitL "Hcnvz"; first done.
+  iSplitL "H0"; first done.
+  iSplitL "H1"; first done.
+  iSplitL "H2"; first done.
+  iSplitL "H3"; first done.
+  iSplitL "H4"; first done.
+  iSplitL "H30"; first done.
+  iSplitL "Hmem"; first done.
+  iFrame.
+  repeat (iSplit; first by (iPureIntro; assumption)).
+  iPureIntro; assumption.
+Qed.
 
 (* The b.cs branch at 0x8 is taken iff the C flag is set.  The WP tracks the
    C flag as the carry-out of the comparison i + (not len) + 1 in 128 bits;
@@ -185,9 +289,9 @@ Lemma linear_search_loop :
   instr 0x0000000010300010 (Some a10) -∗
   instr 0x0000000010300014 (Some a14) -∗
   instr 0x0000000010300018 (Some a18) -∗
-  instr 0x000000001030001c (Some a1c) -∗
-  □ instr_pre 0x0000000010300004 linear_search_loop_spec -∗
-  instr_body 0x0000000010300004 linear_search_loop_spec.
+instr 0x000000001030001c (Some a1c) -∗
+  □ instr_pre 0x0000000010300004 linear_search_loop_spec_sep -∗
+  instr_body 0x0000000010300004 linear_search_loop_spec_sep.
 (*PROOF_END*)
 Proof.
   iStartProof.
@@ -221,12 +325,18 @@ Proof.
       Z.to_nat
         (bv_unsigned (bv_extract 0 64 (bv_zero_extend 128 i) + 1)) =
       S (Z.to_nat (bv_unsigned i)) by bv_solve.
-    rewrite Hnext in H9.
+    match goal with
+    | Hj : (j < Z.to_nat (bv_unsigned (bv_extract 0 64 (bv_zero_extend 128 i) + 1)))%nat |- _ =>
+        rewrite Hnext in Hj
+    end.
     have Hpos :
       (j < Z.to_nat (bv_unsigned i))%nat \/
       j = Z.to_nat (bv_unsigned i) by lia.
     destruct Hpos as [Hbefore | Heqj].
-    { exact (H4 j Hbefore). }
+    { match goal with
+      | Hpre : ∀ j', (j' < Z.to_nat (bv_unsigned i))%nat → data !! j' ≠ Some tgt |- _ =>
+          exact (Hpre j Hbefore)
+      end. }
     { subst j.
       have Hlookup : data !! Z.to_nat (bv_unsigned i) = Some vmem.
       { match goal with Hmem : data !! ?idx = Some vmem |- _ =>
@@ -246,7 +356,8 @@ Proof.
       lia
   end.
   all: try (iPureIntro; assumption).
-Qed.
+  Time Qed.
+
 
 (* The top-level contract, in the upstream `c_call` style of
    binary_search/rbit.  On entry R0 = p (uint64 array), R1 = n (length),
@@ -288,20 +399,46 @@ Proof.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
   all: try bv_simplify_arith select (bv_extract _ _ _ = _).
   all: try (iPureIntro; assumption).
-  (* The loop handover at 0x4 leaves a two-exit `subsume` goal:
-       subsume (instr 0x10300020 (Some a20))
-               (λ _, instr_pre 0x10300020 (not-found wp))
-               (λ _, instr_pre 0x10300028 (found wp))
-     No `Subsume` instance matches `instr -> instr_pre` (binary_search/memcpy
-     only ever have a single exit), so liARun cannot consume it.  Manually
-     unfolding the subsume (`iIntros "_"; iExists tt`) and splitting lets
-     liARun execute both epilogues (naive: mvn x0,xzr; ret, found: mov x0,x3;
-     ret).  Blocked on the two goals below (see current_report.md). *)
-  Unshelve.
-  all: try (iIntros "_"; iExists tt).
-  all: try (iSplitL; liARun).
-  all: try liARun.
-  Unshelve.
-  all: try liARun.
-  Time Abort.
+  - (* not-found export: R0 = UINT64_MAX and tgt occurs nowhere in data *)
+    left.
+    split.
+    { bv_solve. }
+    { intros j.
+      destruct (Nat.ltb_spec j (Z.to_nat (bv_unsigned i'))) as [Hlt | Hge].
+      { match goal with
+        | Hpre : ∀ j', (j' < Z.to_nat (bv_unsigned i'))%nat →
+                    data !! j' ≠ Some b2 |- _ => exact (Hpre j Hlt)
+        end. }
+{ have Hzu : Z.to_nat (bv_unsigned i') = length data.
+        { match goal with
+          | Hiz : bv_unsigned ?a = bv_unsigned ?b |- _ =>
+              rewrite (f_equal Z.to_nat Hiz)
+          end.
+          match goal with
+          | Hlen : bv_unsigned ?c = _ |- _ =>
+              rewrite Hlen
+          end.
+          exact (to_nat_of_nat_id (length data)). }
+        rewrite Hzu in Hge.
+        have Hnone : data !! j = None := lookup_ge_None_2 data j Hge.
+        intros Heq. by rewrite Hnone in Heq. }
+    }
+  - (* found export: first occurrence *)
+    right.
+    split.
+    { bv_solve. }
+    split.
+    { rewrite (bv_unsigned_or_zero i').
+      match goal with
+      | Hfact : data !! Z.to_nat (bv_unsigned i') = Some b2 |- _ =>
+          exact Hfact
+      end. }
+    { intros j Hj.
+      match goal with
+      | Hpre : ∀ j', (j' < Z.to_nat (bv_unsigned i'))%nat →
+                  data !! j' ≠ Some b2 |- _ =>
+          rewrite (bv_unsigned_or_zero i') in Hj;
+          exact (Hpre j Hj)
+      end. }
+  Time Qed.
 End proof.
