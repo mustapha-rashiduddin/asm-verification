@@ -668,3 +668,56 @@ What fixed the two-`ret` c wrapper blocker:
 
 No Islaris/framework changes were made; the specification is unchanged beyond
 the `∧`-vs-`∗` bookkeeping of the two exits.
+
+## 2026-09-22 (16:51 UTC) linear_search: whole-function composition closed (single spec)
+
+Closed the composition gap: `linear_search_loop` (body, `0x4`) and
+`linear_search` (whole function under `c_call`, `0x0`) now prove against the
+SAME no-exit loop spec `linear_search_loop_spec`, and the new
+`linear_search_composed` ties them together with the normal Islaris/Iris
+recursion pattern.
+
+Design (validated first in `scratch/sep_hyp.v`, then moved into
+`linear_search_proof.v`):
+
+- Lifted the two exit continuations out of the loop invariant into
+  standalone contracts `linear_search_nf_spec` (not-found, `0x20`) and
+  `linear_search_f_spec` (found, `0x28`), each stated once and given to BOTH
+  the body lemma and the wrapper lemma as an `instr_pre` hypothesis.
+  Removed the old twin `linear_search_loop_spec_sep`,
+  `linear_search_loop_spec_sep_to_and`, and `star_and` bridge (no longer
+  needed: the rooms duplication problem they addressed is gone).
+- The no-exit invariant `linear_search_loop_spec` (regs/mem/pure facts only)
+  is trivially furnishable by the wrapper.
+- `linear_search_loop` : code `0x4..0x1c` + two exit `instr_pre`s +
+  `□ instr_pre 0x4 linear_search_loop_spec` → `instr_body 0x4 ...`.
+- `linear_search` : code `0x0..0x2c` + the same two exit `instr_pre`s +
+  `□ instr_pre 0x4 linear_search_loop_spec` → `instr_body 0x0 ...`.
+- `linear_search_composed` : code `0x0..0x2c` (instr persistent) + exits once
+  under `□` → `instr_body 0x0 ...`.  Proof mirrors `examples/example.v`
+  (`test_state_adequate'`, lines 192-220): `iAssert (□ instr_body 0x4 spec)`,
+  `iLöb as "IH"`, apply the body lemma, discharge the recursion token via
+  `instr_pre_to_body` + `iModIntro`, then feed the result to `linear_search`.
+
+Facts that drove the structure:
+
+- `instr_pre` is NOT persistent (checked: `Persistent (instr_pre a P)` has no
+  type-class instance), so the exits must be `□`-wrapped in
+  `linear_search_composed` to be re-suppliable both inside the iLöb recursion
+  and in the final `iApply linear_search`.
+- `iAssert`-sub-proofs only inherit the persistent context, so all code words
+  must be `#`-introed (`instr` is persistent).
+- Pure side goal `0 ≤ stack_size` from `iApply linear_search` is discharged
+  with `lia` against the theorem premise.
+
+Verification in `/home/ubuntu/asm-verification/armored/linear_search`:
+
+- `coqc -Q . "" -R traces isla.instructions.linear_search linear_search_proof.v`
+  → exit 0 (all `Time Qed`s, no residual/shelved goals, no Admitted/Axiom).
+- `coqchk -silent -Q . "" -R traces isla.instructions.linear_search
+  linear_search_proof` → exit 0 (only loadpath-remap warning).
+- `Print Assumptions linear_search_loop`, `Print Assumptions linear_search`,
+  `Print Assumptions linear_search_composed` → all **Closed under the global
+  context**.
+- No assembly or generated-trace changes. No termination claim (still the next
+  open item).

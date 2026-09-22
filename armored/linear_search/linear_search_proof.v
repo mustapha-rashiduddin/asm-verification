@@ -31,12 +31,59 @@ Require Import mod8addr_lemmas.
 
 (*PROOF_START*)
 
-(* [linear_search_loop_spec] is the loop invariant at address 0x4.  It
-   additionally records the two exit obligations: [instr_pre] at 0x20 (the
-   not-found epilogue) and [instr_pre] at 0x28 (the found epilogue). *)
+(* [linear_search_nf_spec] and [linear_search_f_spec] are the two exit
+   contracts reached on the not-found branch (0x20) and on the found branch
+   (0x28).  They are stated as separate [instr_pre] hypotheses, not bundled
+   into the loop invariant, so that the SAME [instr_pre] resources can be
+   used both when proving the loop body and when proving the whole function.
+   Because every [instr_pre] is persistent, no linear resource is duplicated
+   across the two exits. *)
 Section proof.
 Context `{!islaG Σ} `{!threadG}.
 
+Definition linear_search_nf_spec : iProp Σ :=
+  ∃ (base len tgt ret : bv 64) (data : list (bv 64)) (i' tmp : bv 64),
+  reg_col sys_regs ∗
+  reg_col CNVZ_regs ∗
+  "R0" ↦ᵣ RVal_Bits base ∗
+  "R1" ↦ᵣ RVal_Bits len ∗
+  "R2" ↦ᵣ RVal_Bits tgt ∗
+  "R3" ↦ᵣ RVal_Bits i' ∗
+  "R4" ↦ᵣ RVal_Bits tmp ∗
+  "R30" ↦ᵣ RVal_Bits ret ∗
+  bv_unsigned base ↦ₘ∗ data ∗
+  ⌜bv_unsigned i' = bv_unsigned len⌝ ∗
+  ⌜bv_unsigned len = length data⌝ ∗
+  ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
+.
+Arguments linear_search_nf_spec /.
+Global Instance : LithiumUnfold (linear_search_nf_spec) := I.
+
+Definition linear_search_f_spec : iProp Σ :=
+  ∃ (base len tgt ret : bv 64) (data : list (bv 64)) (i' tmp : bv 64),
+  reg_col sys_regs ∗
+  reg_col CNVZ_regs ∗
+  "R0" ↦ᵣ RVal_Bits base ∗
+  "R1" ↦ᵣ RVal_Bits len ∗
+  "R2" ↦ᵣ RVal_Bits tgt ∗
+  "R3" ↦ᵣ RVal_Bits i' ∗
+  "R4" ↦ᵣ RVal_Bits tmp ∗
+  "R30" ↦ᵣ RVal_Bits ret ∗
+  bv_unsigned base ↦ₘ∗ data ∗
+  ⌜bv_unsigned i' < bv_unsigned len⌝ ∗
+  ⌜bv_unsigned len = length data⌝ ∗
+  ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
+  ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
+.
+Arguments linear_search_f_spec /.
+Global Instance : LithiumUnfold (linear_search_f_spec) := I.
+
+(* [linear_search_loop_spec] is the loop invariant at address 0x4 WITHOUT
+   the exit obligations: it only records the register/pure facts that hold
+   at every back-edge, so the top level can furnish it trivially.  The
+   exits are supplied as separate hypotheses (see above).  The loop-body
+   lemma [linear_search_loop], the whole-function lemma [linear_search]
+   and the composition [linear_search_composed] all use this SAME spec. *)
 Definition linear_search_loop_spec : iProp Σ :=
   ∃ (base len tgt i tmp ret : bv 64) (data : list (bv 64)),
   reg_col sys_regs ∗
@@ -52,145 +99,10 @@ Definition linear_search_loop_spec : iProp Σ :=
   ⌜bv_unsigned len = length data⌝ ∗
   ⌜bv_unsigned base `mod` 8 = 0⌝ ∗
   ⌜bv_unsigned base + bv_unsigned len * 8 < 2 ^ 52⌝ ∗
-  ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝ ∗
-  (instr_pre 0x0000000010300020 (
-    ∃ (i' tmp : bv 64),
-    reg_col sys_regs ∗
-    reg_col CNVZ_regs ∗
-    "R0" ↦ᵣ RVal_Bits base ∗
-    "R1" ↦ᵣ RVal_Bits len ∗
-    "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i' ∗
-    "R4" ↦ᵣ RVal_Bits tmp ∗
-    "R30" ↦ᵣ RVal_Bits ret ∗
-    bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i' = bv_unsigned len⌝ ∗
-    ⌜bv_unsigned len = length data⌝ ∗
-    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
-  ) ∧
-  instr_pre 0x0000000010300028 (
-    ∃ (i' tmp : bv 64),
-    reg_col sys_regs ∗
-    reg_col CNVZ_regs ∗
-    "R0" ↦ᵣ RVal_Bits base ∗
-    "R1" ↦ᵣ RVal_Bits len ∗
-    "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i' ∗
-    "R4" ↦ᵣ RVal_Bits tmp ∗
-    "R30" ↦ᵣ RVal_Bits ret ∗
-    bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i' < bv_unsigned len⌝ ∗
-    ⌜bv_unsigned len = length data⌝ ∗
-    ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
-    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
-  ))
+  ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝
 .
 Arguments linear_search_loop_spec /.
 Global Instance : LithiumUnfold (linear_search_loop_spec) := I.
-
-(* Inside the loop body the two exit [instr_pre]s are reached as SEPARATE
-   linear resources at two different addresses, so the body proof runs them
-   as a conjunction under [∗].  The top-level caller instead receives them as
-   the additive [∧] (both continuation shapes are simultaneously available for
-   whichever exit actually runs).  [linear_search_loop_spec_sep] is the
-   SEP-version used by the body; [linear_search_loop_spec_sep_to_and] shows it
-   is at least as strong as the additive version (no linear resources are
-   duplicated). *)
-Definition linear_search_loop_spec_sep : iProp Σ :=
-  ∃ (base len tgt i tmp ret : bv 64) (data : list (bv 64)),
-  reg_col sys_regs ∗
-  reg_col CNVZ_regs ∗
-  "R0" ↦ᵣ RVal_Bits base ∗
-  "R1" ↦ᵣ RVal_Bits len ∗
-  "R2" ↦ᵣ RVal_Bits tgt ∗
-  "R3" ↦ᵣ RVal_Bits i ∗
-  "R4" ↦ᵣ RVal_Bits tmp ∗
-  "R30" ↦ᵣ RVal_Bits ret ∗
-  bv_unsigned base ↦ₘ∗ data ∗
-  ⌜bv_unsigned i ≤ bv_unsigned len⌝ ∗
-  ⌜bv_unsigned len = length data⌝ ∗
-  ⌜bv_unsigned base `mod` 8 = 0⌝ ∗
-  ⌜bv_unsigned base + bv_unsigned len * 8 < 2 ^ 52⌝ ∗
-  ⌜∀ j, (j < Z.to_nat (bv_unsigned i))%nat → data !! j ≠ Some tgt⌝ ∗
-  (instr_pre 0x0000000010300020 (
-    ∃ (i' tmp : bv 64),
-    reg_col sys_regs ∗
-    reg_col CNVZ_regs ∗
-    "R0" ↦ᵣ RVal_Bits base ∗
-    "R1" ↦ᵣ RVal_Bits len ∗
-    "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i' ∗
-    "R4" ↦ᵣ RVal_Bits tmp ∗
-    "R30" ↦ᵣ RVal_Bits ret ∗
-    bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i' = bv_unsigned len⌝ ∗
-    ⌜bv_unsigned len = length data⌝ ∗
-    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
-  ) ∗
-  instr_pre 0x0000000010300028 (
-    ∃ (i' tmp : bv 64),
-    reg_col sys_regs ∗
-    reg_col CNVZ_regs ∗
-    "R0" ↦ᵣ RVal_Bits base ∗
-    "R1" ↦ᵣ RVal_Bits len ∗
-    "R2" ↦ᵣ RVal_Bits tgt ∗
-    "R3" ↦ᵣ RVal_Bits i' ∗
-    "R4" ↦ᵣ RVal_Bits tmp ∗
-    "R30" ↦ᵣ RVal_Bits ret ∗
-    bv_unsigned base ↦ₘ∗ data ∗
-    ⌜bv_unsigned i' < bv_unsigned len⌝ ∗
-    ⌜bv_unsigned len = length data⌝ ∗
-    ⌜data !! Z.to_nat (bv_unsigned i') = Some tgt⌝ ∗
-    ⌜∀ j, (j < Z.to_nat (bv_unsigned i'))%nat → data !! j ≠ Some tgt⌝
-  ))
-.
-Arguments linear_search_loop_spec_sep /.
-Global Instance : LithiumUnfold (linear_search_loop_spec_sep) := I.
-
-Lemma star_and (P Q : iProp Σ) : P ∗ Q -∗ P ∧ Q.
-Proof. iIntros "[HP HQ]". iSplit; iAssumption. Qed.
-
-Lemma to_nat_of_nat_id (n : nat) : Z.to_nat (Z.of_nat n) = n.
-Proof. zify; lia. Qed.
-
-Lemma bv_unsigned_or_zero (x : bv 64) :
-  bv_unsigned (bv_or (BV 64 0) x) = bv_unsigned x.
-Proof. bv_simplify_arith. bv_solve. Qed.
-
-Lemma linear_search_loop_spec_sep_to_and :
-  linear_search_loop_spec_sep -∗ linear_search_loop_spec.
-Proof.
-  iIntros "H".
-  iDestruct "H" as (base len tgt i tmp ret data) "H".
-  iDestruct "H" as "[Hsys Hrest]".
-  iDestruct "Hrest" as "[Hcnvz Hrest]".
-  iDestruct "Hrest" as "[H0 Hrest]".
-  iDestruct "Hrest" as "[H1 Hrest]".
-  iDestruct "Hrest" as "[H2 Hrest]".
-  iDestruct "Hrest" as "[H3 Hrest]".
-  iDestruct "Hrest" as "[H4 Hrest]".
-  iDestruct "Hrest" as "[H30 Hrest]".
-  iDestruct "Hrest" as "[Hmem Hrest]".
-  iDestruct "Hrest" as "[%Hile Hrest]".
-  iDestruct "Hrest" as "[%Hlen Hrest]".
-  iDestruct "Hrest" as "[%Hmod Hrest]".
-  iDestruct "Hrest" as "[%Hsz Hrest]".
-  iDestruct "Hrest" as "[%Hpre Hexit]".
-  iDestruct "Hexit" as "[Hnaive Hfound]".
-  iExists base, len, tgt, i, tmp, ret, data.
-  iSplitL "Hsys"; first done.
-  iSplitL "Hcnvz"; first done.
-  iSplitL "H0"; first done.
-  iSplitL "H1"; first done.
-  iSplitL "H2"; first done.
-  iSplitL "H3"; first done.
-  iSplitL "H4"; first done.
-  iSplitL "H30"; first done.
-  iSplitL "Hmem"; first done.
-  iFrame.
-  repeat (iSplit; first by (iPureIntro; assumption)).
-  iPureIntro; assumption.
-Qed.
 
 (* The b.cs branch at 0x8 is taken iff the C flag is set.  The WP tracks the
    C flag as the carry-out of the comparison i + (not len) + 1 in 128 bits;
@@ -264,6 +176,19 @@ Proof.
   apply carry_wrap_le; done || exact (bv_unsigned_in_range (64%N) a) || exact (bv_unsigned_in_range (64%N) b).
 Qed.
 
+(* At the found exit (0x14 b.eq 0x28) the WP concludes that the loaded value
+   is different from the target; the extracted subtraction-is-nonzero fact
+   below is turned into Z-inequality of the two unsigned values. *)
+Lemma bv_sub_extract_neq_zero (a b : bv 64) :
+  bv_extract 0 64 (bv_add (bv_add (bv_zero_extend 128 a) (bv_zero_extend 128 (bv_not b))) (BV 128 1)) ≠ BV 64 0 →
+  bv_unsigned a ≠ bv_unsigned b.
+Proof.
+  intros Hne Habs.
+  apply Hne.
+  bv_simplify_arith.
+  bv_solve.
+Qed.
+
 Lemma no_carry_to_lt (a b : bv 64) :
   bv_zero_extend 128
     (bv_extract 0 64
@@ -289,9 +214,11 @@ Lemma linear_search_loop :
   instr 0x0000000010300010 (Some a10) -∗
   instr 0x0000000010300014 (Some a14) -∗
   instr 0x0000000010300018 (Some a18) -∗
-instr 0x000000001030001c (Some a1c) -∗
-  □ instr_pre 0x0000000010300004 linear_search_loop_spec_sep -∗
-  instr_body 0x0000000010300004 linear_search_loop_spec_sep.
+  instr 0x000000001030001c (Some a1c) -∗
+  instr_pre 0x0000000010300020 linear_search_nf_spec -∗
+  instr_pre 0x0000000010300028 linear_search_f_spec -∗
+  □ instr_pre 0x0000000010300004 linear_search_loop_spec -∗
+  instr_body 0x0000000010300004 linear_search_loop_spec.
 (*PROOF_END*)
 Proof.
   iStartProof.
@@ -315,20 +242,28 @@ Proof.
   all: try bv_solve.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
   all: try bv_simplify_arith select (bv_extract _ _ _ = _).
+  all: try (iPureIntro; assumption).
+  Unshelve.
+  all: try match goal with
+  | Hov : bv_zero_extend 128 _ ≠ _ |- bv_unsigned _ = bv_unsigned _ =>
+      bv_simplify_arith Hov;
+      move: Hov => /carry_to_le Hge;
+      lia
+  end.
+  all: try (iPureIntro; assumption).
   - match goal with
     | Hlookup : data !! ?idx = Some ?value |- data !! ?want = Some tgt =>
         replace want with idx by bv_solve;
         replace tgt with value by bv_solve;
         exact Hlookup
     end.
-  - have Hnext :
+  - iPureIntro.
+    intros j Htoo.
+    have Hnext :
       Z.to_nat
         (bv_unsigned (bv_extract 0 64 (bv_zero_extend 128 i) + 1)) =
       S (Z.to_nat (bv_unsigned i)) by bv_solve.
-    match goal with
-    | Hj : (j < Z.to_nat (bv_unsigned (bv_extract 0 64 (bv_zero_extend 128 i) + 1)))%nat |- _ =>
-        rewrite Hnext in Hj
-    end.
+    rewrite Hnext in Htoo.
     have Hpos :
       (j < Z.to_nat (bv_unsigned i))%nat \/
       j = Z.to_nat (bv_unsigned i) by lia.
@@ -343,19 +278,12 @@ Proof.
           replace (Z.to_nat (bv_unsigned i)) with idx by bv_solve;
           exact Hmem
         end. }
-      have Hne : vmem ≠ tgt by bv_solve.
+      have Hne0 : bv_unsigned vmem ≠ bv_unsigned tgt := bv_sub_extract_neq_zero vmem tgt H8.
+      have Hne : vmem ≠ tgt by (intros Hv; apply Hne0; f_equal; exact Hv).
       intros Heq.
       rewrite Hlookup in Heq.
       injection Heq as Heq.
       exact (Hne Heq). }
-  Unshelve.
-  all: try match goal with
-  | Hov : bv_zero_extend 128 _ ≠ _ |- bv_unsigned _ = bv_unsigned _ =>
-      bv_simplify_arith Hov;
-      move: Hov => /carry_to_le Hge;
-      lia
-  end.
-  all: try (iPureIntro; assumption).
   Time Qed.
 
 
@@ -385,10 +313,19 @@ Global Instance : LithiumUnfold (linear_search_spec) := I.
 Lemma linear_search stack_size :
   0 ≤ stack_size →
   instr 0x0000000010300000 (Some a0) -∗
+  instr 0x0000000010300004 (Some a4) -∗
+  instr 0x0000000010300008 (Some a8) -∗
+  instr 0x000000001030000c (Some ac) -∗
+  instr 0x0000000010300010 (Some a10) -∗
+  instr 0x0000000010300014 (Some a14) -∗
+  instr 0x0000000010300018 (Some a18) -∗
+  instr 0x000000001030001c (Some a1c) -∗
   instr 0x0000000010300020 (Some a20) -∗
   instr 0x0000000010300024 (Some a24) -∗
   instr 0x0000000010300028 (Some a28) -∗
   instr 0x000000001030002c (Some a2c) -∗
+  instr_pre 0x0000000010300020 linear_search_nf_spec -∗
+  instr_pre 0x0000000010300028 linear_search_f_spec -∗
   □ instr_pre 0x0000000010300004 linear_search_loop_spec -∗
   instr_body 0x0000000010300000 (linear_search_spec stack_size).
 Proof.
@@ -399,46 +336,65 @@ Proof.
   all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
   all: try bv_simplify_arith select (bv_extract _ _ _ = _).
   all: try (iPureIntro; assumption).
-  - (* not-found export: R0 = UINT64_MAX and tgt occurs nowhere in data *)
-    left.
-    split.
-    { bv_solve. }
-    { intros j.
-      destruct (Nat.ltb_spec j (Z.to_nat (bv_unsigned i'))) as [Hlt | Hge].
-      { match goal with
-        | Hpre : ∀ j', (j' < Z.to_nat (bv_unsigned i'))%nat →
-                    data !! j' ≠ Some b2 |- _ => exact (Hpre j Hlt)
-        end. }
-{ have Hzu : Z.to_nat (bv_unsigned i') = length data.
-        { match goal with
-          | Hiz : bv_unsigned ?a = bv_unsigned ?b |- _ =>
-              rewrite (f_equal Z.to_nat Hiz)
-          end.
-          match goal with
-          | Hlen : bv_unsigned ?c = _ |- _ =>
-              rewrite Hlen
-          end.
-          exact (to_nat_of_nat_id (length data)). }
-        rewrite Hzu in Hge.
-        have Hnone : data !! j = None := lookup_ge_None_2 data j Hge.
-        intros Heq. by rewrite Hnone in Heq. }
-    }
-  - (* found export: first occurrence *)
-    right.
-    split.
-    { bv_solve. }
-    split.
-    { rewrite (bv_unsigned_or_zero i').
-      match goal with
-      | Hfact : data !! Z.to_nat (bv_unsigned i') = Some b2 |- _ =>
-          exact Hfact
-      end. }
-    { intros j Hj.
-      match goal with
-      | Hpre : ∀ j', (j' < Z.to_nat (bv_unsigned i'))%nat →
-                  data !! j' ≠ Some b2 |- _ =>
-          rewrite (bv_unsigned_or_zero i') in Hj;
-          exact (Hpre j Hj)
-      end. }
+  Unshelve. all: prepare_sidecond.
+  all: try bv_solve.
+  all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
+  all: try bv_simplify_arith select (bv_extract _ _ _ = _).
+  Unshelve.
+  all: try (iPureIntro;
+            intros j Htoo;
+            have H0n : bv_unsigned (0 : bv 64) = 0 by bv_solve).
+  Unshelve. all: try (rewrite H0n in Htoo).
+  Unshelve. all: try (simpl in Htoo; lia).
   Time Qed.
+
+(* [linear_search_composed] closes the recursion: the [□ instr_pre 0x4
+   linear_search_loop_spec] contract that [linear_search_loop] and
+   [linear_search] request is produced from the CODE itself by a Löb-style
+   induction hypothesis ([iLöb]) over [□ instr_body 0x4
+   linear_search_loop_spec], discharged through [instr_pre_to_body] exactly
+   as in `examples/example.v` (`test_state_adequate'`, lines 192-220).  The
+   only remaining hypotheses are the code words ([instr] is persistent) and
+   the two exit contracts; [instr_pre] itself is affine (not persistent), so
+   the exits are given once, persistently, under a [□] and may be re-supplied
+   both inside the recursion and for the final application of
+   [linear_search]. *)
+Lemma linear_search_composed stack_size :
+  0 ≤ stack_size →
+  instr 0x0000000010300000 (Some a0) -∗
+  instr 0x0000000010300004 (Some a4) -∗
+  instr 0x0000000010300008 (Some a8) -∗
+  instr 0x000000001030000c (Some ac) -∗
+  instr 0x0000000010300010 (Some a10) -∗
+  instr 0x0000000010300014 (Some a14) -∗
+  instr 0x0000000010300018 (Some a18) -∗
+  instr 0x000000001030001c (Some a1c) -∗
+  instr 0x0000000010300020 (Some a20) -∗
+  instr 0x0000000010300024 (Some a24) -∗
+  instr 0x0000000010300028 (Some a28) -∗
+  instr 0x000000001030002c (Some a2c) -∗
+  □ instr_pre 0x0000000010300020 linear_search_nf_spec -∗
+  □ instr_pre 0x0000000010300028 linear_search_f_spec -∗
+  instr_body 0x0000000010300000 (linear_search_spec stack_size).
+Proof.
+  move => ?. iStartProof.
+  iIntros "#Ha0 #Ha4 #Ha8 #Hac #Ha10 #Ha14 #Ha18 #Ha1c #Ha20 #Ha24 #Ha28 #Ha2c #Hnf #Hf".
+  iAssert (□ instr_body 0x0000000010300004 linear_search_loop_spec)%I as "Hloop".
+  {
+    iLöb as "IH". iModIntro.
+    iApply linear_search_loop.
+    all: try iAssumption.
+    all: try (iApply "Hnf" || iApply "Hf").
+    iModIntro.
+    iApply instr_pre_to_body. by iModIntro.
+  }
+  iApply (linear_search stack_size).
+  all: try iAssumption.
+  all: try (iApply "Hnf" || iApply "Hf").
+  all: try (lia || iAssumption).
+  iModIntro.
+  iApply instr_pre_to_body. by iModIntro.
+  Unshelve. all: done.
+Qed.
+
 End proof.
