@@ -610,3 +610,72 @@ One `//@constraint:` on the loop's `ldr`:
 **State after the step**: all new files are in the repo under
 `armored/linear_search/`; the untouched islaris/isla/sail/Rocq installs and
 checkouts are unchanged; ArchSem not installed; no proof attempted.
+
+## 13. linear_search loop theorem proven; top-level theorem blocked
+
+Date: 2026-09-22, same machine, same Islaris environment.
+
+### 13.1 `linear_search_loop` Qed (PASSED)
+
+`armored/linear_search/linear_search_proof.v` proves `linear_search_loop`
+(`instr_body 0x10300004 linear_search_loop_spec`) with a genuine `Time Qed`
+and zero residual/shelved goals. Clean `coqc` (see
+`current_report.md`) exit 0; `coqchk` exit 0; `Print Assumptions
+linear_search_loop` → **Closed under the global context**. No
+`Admitted`/`admit`/`Axiom`/`Abort`, no assembly or generated-trace changes.
+
+Key fixes (vs. the WIP that stopped at the semantic-memory goal):
+
+- `no_carry_to_lt` converts the real AArch64 C-flag (128-bit overflow result of
+  `i + ¬len + 1`) on the b.cs-**not-taken** branch into the strict bound
+  `bv_unsigned i < bv_unsigned len` needed by the `ldr [x0, x3, lsl #3]`
+  in-bounds reasoning (the b.cs-**taken** bound uses `carry_to_le`).
+- The exit continuations existentially quantify the eventual `i'` (upstream
+  style) so they frame across the increment:
+  - not-found (0x20): `i' = len`, `len = length data`,
+    `∀ j < i', data !! j ≠ tgt`, complete array ownership;
+  - found (0x28): `i' < len`, `len = length data`,
+    `data !! Z.to_nat i' = Some tgt`, `∀ j < i', data !! j ≠ tgt`, complete
+    array ownership.
+
+Both continuation sets preserve the full loop invariant (i ≤ len,
+`len = length data`, 8-alignment, `< 2^52`, no-earlier-match prefix).
+
+### 13.2 Top-level `linear_search` theorem (BLOCKED)
+
+`Lemma linear_search` (c_call wrapper, R0 = array, R1 = len, R2 = tgt;
+returns first index or `UINT64_MAX`; array untouched; `Timeout` none, as
+before) does **not** yet Qed. Analysis of the blocker:
+
+- The loop handover at 0x4 leaves the two-exit subsume goal
+  `subsume (instr 0x10300020 (Some a20)) (λ _, instr_pre 0x10300020 …)
+   (λ _, instr_pre 0x10300028 …)`. No `Subsume` instance matches
+  `instr → instr_pre`, so `liARun` cannot consume it. binary_search / memcpy /
+  uart are all single-exit and never hit this.
+- Works if unfolded by hand (`iIntros "_"; iExists tt`, then `iSplitL; liARun`);
+  liARun then executes both epilogues (0x20 mvn x0,xzr → ret; 0x28 mov x0,x3 →
+  ret). This was the 3.0s/0.23s/0.22s liARun runs in the debug tail.
+- **Remaining, unrecoverable residuals (2 goals):**
+  1. `find_in_context (FindInstrKind (bv_unsigned ret) true)` for the naive
+     return path. `c_call` supplies exactly **one**
+     `instr_pre (bv_unsigned ret) (c_call_ret …)` hypothesis (calling_convention.v
+     line 116); the two exit `ret`s (0x24 and 0x2c) both need it, and islaris's
+     `find_in_context`/`c_call` flow only supports a single-`ret` wrapper.
+  2. The naive `c_call_ret` pure obligation
+     `(rets!!!0 = bv_modulus 64 - 1 ∧ ∀ j, data !! j ≠ Some tgt) ∨ …` which
+     needs the full not-found fact of the 0x20 exit; the exit's pure conjuncts
+     are consumed while re-proving side-conditions during the run and are no
+     longer in context, so it is not provable at the point the obligation is
+     generated.
+
+Islaris has no shipped example of a two-exit / two-`ret` c wrapper, so this is
+a genuine tool-pattern gap rather than a spec mistake.
+
+### 13.3 State
+
+- `linear_search_loop` Qed is intact; the top-level lemma is retained with a
+  documented `Abort.` (dev state) in `linear_search_proof.v`, which compiles.
+- `current_report.md` updated with this blocker + exact residual goals.
+- No assembly / trace / third-party changes.
+
+**State after the step**: commit and push this checkpoint (file + reports).

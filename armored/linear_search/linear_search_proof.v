@@ -247,4 +247,61 @@ Proof.
   end.
   all: try (iPureIntro; assumption).
 Qed.
+
+(* The top-level contract, in the upstream `c_call` style of
+   binary_search/rbit.  On entry R0 = p (uint64 array), R1 = n (length),
+   R2 = tgt.  On return R0 is either UINT64_MAX (target absent everywhere)
+   or the first index whose element equals tgt.  The array is untouched. *)
+Definition linear_search_spec (stack_size : Z) : iProp Σ :=
+  (c_call stack_size (λ args sp RET,
+    ∃ (data : list (bv 64)),
+    bv_unsigned (args !!! 0%nat) ↦ₘ∗ data ∗
+    ⌜bv_unsigned (args !!! 1%nat) = length data⌝ ∗
+    ⌜bv_unsigned (args !!! 0%nat) `mod` 8 = 0⌝ ∗
+    ⌜bv_unsigned (args !!! 0%nat) + length data * 8 < 2 ^ 52⌝ ∗
+    RET (λ rets,
+      bv_unsigned (args !!! 0%nat) ↦ₘ∗ data ∗
+      ⌜(bv_unsigned (rets !!! 0%nat) = bv_modulus 64 - 1 ∧
+        ∀ j, data !! j ≠ Some (args !!! 2%nat)) ∨
+       (bv_unsigned (rets !!! 0%nat) < length data ∧
+        data !! Z.to_nat (bv_unsigned (rets !!! 0%nat)) = Some (args !!! 2%nat) ∧
+        ∀ j, (j < Z.to_nat (bv_unsigned (rets !!! 0%nat)))%nat →
+             data !! j ≠ Some (args !!! 2%nat))⌝ ∗
+      True))
+  )%I.
+Global Instance : LithiumUnfold (linear_search_spec) := I.
+
+Lemma linear_search stack_size :
+  0 ≤ stack_size →
+  instr 0x0000000010300000 (Some a0) -∗
+  instr 0x0000000010300020 (Some a20) -∗
+  instr 0x0000000010300024 (Some a24) -∗
+  instr 0x0000000010300028 (Some a28) -∗
+  instr 0x000000001030002c (Some a2c) -∗
+  □ instr_pre 0x0000000010300004 linear_search_loop_spec -∗
+  instr_body 0x0000000010300000 (linear_search_spec stack_size).
+Proof.
+  move => ?. iStartProof.
+  liARun.
+  Unshelve. all: prepare_sidecond.
+  all: try bv_solve.
+  all: try bv_simplify_arith select (bv_extract _ _ _ ≠ _).
+  all: try bv_simplify_arith select (bv_extract _ _ _ = _).
+  all: try (iPureIntro; assumption).
+  (* The loop handover at 0x4 leaves a two-exit `subsume` goal:
+       subsume (instr 0x10300020 (Some a20))
+               (λ _, instr_pre 0x10300020 (not-found wp))
+               (λ _, instr_pre 0x10300028 (found wp))
+     No `Subsume` instance matches `instr -> instr_pre` (binary_search/memcpy
+     only ever have a single exit), so liARun cannot consume it.  Manually
+     unfolding the subsume (`iIntros "_"; iExists tt`) and splitting lets
+     liARun execute both epilogues (naive: mvn x0,xzr; ret, found: mov x0,x3;
+     ret).  Blocked on the two goals below (see current_report.md). *)
+  Unshelve.
+  all: try (iIntros "_"; iExists tt).
+  all: try (iSplitL; liARun).
+  all: try liARun.
+  Unshelve.
+  all: try liARun.
+  Time Abort.
 End proof.
