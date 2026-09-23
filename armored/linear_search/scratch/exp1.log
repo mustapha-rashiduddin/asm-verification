@@ -1,0 +1,8 @@
+Warning: /home/ubuntu/asm-verification/armored/linear_search/traces was
+previously bound to traces; it is remapped to isla.instructions.linear_search
+[overriding-logical-loadpath,filesystem,default]
+Tactic call liARun ran for 5.561 secs (5.534u,0.024s) (success)
+Tactic call liARun ran for 8.508 secs (8.459u,0.048s) (success)
+Finished transaction in 6.252 secs (6.245u,0.007s) (successful)
+Tactic call liARun ran for 1.985 secs (1.978u,0.005s) (success)
+Finished transaction in 1.907 secs (1.907u,0.s) (successful)
