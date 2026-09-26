@@ -1188,3 +1188,91 @@ Proof.
   rewrite bv_add_pc_14.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* a14: b.eq 0x10300028 at pc 0x10300014.                                    *)
+(*                                                                           *)
+(* In the continue case exec_a10 has already fixed PSTATE.Z = 0, so the      *)
+(* branch is not taken and the trace falls through to a18 at 0x10300018.     *)
+(*                                                                           *)
+(* 19 steps: 6 AssumeRegs, DeclareConst 24, AssumeReg PSTATE.EL/nRW/SCR_EL3, *)
+(*           ReadReg PSTATE.Z (pins symbol 24 to 0), DefineConst 27 (Z == 1  *)
+(*           = false), tcases [ fall ], Assert (Not 27), DeclareConst 49,     *)
+(*           ReadReg _PC, DefineConst 50 (pc + 4), WriteReg _PC, DoneES.     *)
+(*                                                                           *)
+(* No new semantic hypothesis: the concrete Z = 0 carried in from exec_a10   *)
+(* is enough.  N/C/V are preserved exactly as received.                      *)
+(* ------------------------------------------------------------------------ *)
+
+Lemma bv_add_pc_18 :
+  bv_add (BV 64 0x10300014) (BV 64 4) = BV 64 0x10300018.
+Proof. apply bv_eq. rewrite bv_add_unsigned. rewrite bv_unsigned_BV. rewrite bv_unsigned_BV. unfold bv_wrap, bv_modulus. reflexivity. Qed.
+
+Lemma ls_instrs_a18 : ls_instrs !! (BV 64 0x10300018) = Some a18.
+Proof. reflexivity. Qed.
+
+Lemma exec_a14 (base len tgt i v : bv 64) (mem : mem_map) :
+  nsteps 19
+    ([ls_θ a14 (ls_regs_nzcv base len tgt i v (BV 64 0x10300014)
+              (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt))], ls_σ mem)
+    []
+    ([ls_θ a18 (ls_regs_nzcv base len tgt i v (bv_add (BV 64 0x10300014) (BV 64 4))
+              (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt))], ls_σ mem).
+Proof.
+  (* events 1..6: the six system-register AssumeRegs. *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 7: DeclareConst 24 (the fresh 1-bit symbol for PSTATE.Z). *)
+  ls_step.
+  (* events 8..10: AssumeReg PSTATE.EL, PSTATE.nRW, SCR_EL3. *)
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 11: ReadReg PSTATE.Z; the reflexive read pins the fresh symbol    *)
+  (* to the concrete Z = 0 carried in from exec_a10.                          *)
+  ls_step.
+  (* event 12: DefineConst 27 = (Z == 1) - now evaluates to false. *)
+  ls_step.
+  (* event 13: tcases; choose the fall-through branch (its assertion claims  *)
+  (* ~27, which the concrete Z = 0 makes true).                              *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply CasesES.
+      right; left; reflexivity.
+    - ls_consequences.
+  }
+  (* fall branch: Assert (Not 27), DeclareConst 49, ReadReg _PC,             *)
+  (* DefineConst 50 (pc + 4), WriteReg _PC.                                  *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 19: tnil -> LDone, fetching the successor a18 at pc + 4. *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply DoneES.
+    - split;
+      [ reflexivity
+      | eexists (BV 64 0x10300018);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x10300014) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x10300018)));
+          rewrite bv_add_pc_18;
+          reflexivity
+        | rewrite ls_instrs_a18;
+          split;
+          [ reflexivity
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
+  }
+  rewrite bv_add_pc_18.
+  apply nsteps_refl.
+Qed.
