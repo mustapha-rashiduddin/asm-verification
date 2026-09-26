@@ -432,6 +432,16 @@ Ltac ls_consequences :=
   repeat (eexists || split || first [left | right]);
   try reflexivity.
 
+(* Normalise the current trace head (substitutions, definitions, let,       *)
+(* match) exactly as ls_trace_step does, without committing to an event.     *)
+Ltac ls_change_trace :=
+  lazymatch goal with
+  | |- trace_step ?l ?regs ?κ ?st =>
+      let t := eval cbv [seq_trace ls_θ subst_trace a4 a8 ac a10 a14 a18 a1c] in l in
+      let t := eval simpl in t in
+      change_no_check (trace_step t regs κ st)
+  end.
+
 Ltac ls_step :=
   eapply nsteps_step;
   [ eapply step_single';
@@ -790,5 +800,204 @@ Proof.
           | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
   }
   rewrite bv_add_pc_ac.
+  apply nsteps_refl.
+Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* ac: ldr x4, [x0, x3, lsl #3].                                            *)
+(*                                                                           *)
+(* The real generated trace computes the 64-bit effective address           *)
+(*                                                                           *)
+(*     E = R0 + (R3 << 3)  =  base + i * 8                                  *)
+(*                                                                           *)
+(* (symbol 70), asserts the generated alignment constraint (symbol 74:      *)
+(* E is 8-aligned), and finally reads 8 bytes from the address              *)
+(*                                                                           *)
+(*     <E[51:0]> << 4        (zero-extended to 64 bits)                     *)
+(*                                                                           *)
+(* (the isla "cache line" reshaping of the address, symbols 1397/1398).      *)
+(* The loaded 64-bit value is written to R4 and the PC advances by 4 to     *)
+(* 0x10300010 (the next instruction word, a10).                              *)
+(*                                                                           *)
+(* Honest ReadMem premises:                                                  *)
+(*   * the generated alignment/constraint is valid,                          *)
+(*   * read_mem mem <effective-address> 8 = Some <loaded 64-bit value>.      *)
+(* We do NOT link these to a list/array abstraction yet.                     *)
+(* ------------------------------------------------------------------------ *)
+
+Definition ac_addr (base i : bv 64) : bv 64 :=
+  bv_add base (bv_concat 64 (bv_extract 0 61 i) (BV 3 0)).
+
+Definition ac_rdbase (base i : bv 64) : bv 64 :=
+  bv_zero_extend 64 (bv_concat 56 (BV 4 0) (bv_extract 0 52 (ac_addr base i))).
+
+Lemma bv_add_pc_ac10 :
+  bv_add (BV 64 0x1030000c) (BV 64 4) = BV 64 0x10300010.
+Proof. apply bv_eq. rewrite bv_add_unsigned. rewrite bv_unsigned_BV. rewrite bv_unsigned_BV. unfold bv_wrap, bv_modulus. reflexivity. Qed.
+
+Lemma ls_instrs_a10 : ls_instrs !! (BV 64 0x10300010) = Some a10.
+Proof. reflexivity. Qed.
+
+(* The a_exp of the generated alignment constraint (event 17). *)
+Definition ac_assume_exp : a_exp :=
+  AExp_Binop Eq
+    (AExp_Manyop (Bvmanyarith Bvand)
+      [ AExp_Manyop (Bvmanyarith Bvadd)
+          [ AExp_Val (AVal_Var "R0" []) Mk_annot
+          ; AExp_Manyop (Bvmanyarith Bvmul)
+              [ AExp_Val (AVal_Var "R3" []) Mk_annot
+              ; AExp_Val (AVal_Bits (BV 64 0x8)) Mk_annot ] Mk_annot ] Mk_annot
+      ; AExp_Val (AVal_Bits (BV 64 0xfff0000000000007)) Mk_annot ] Mk_annot)
+    (AExp_Val (AVal_Bits (BV 64 0x0)) Mk_annot) Mk_annot.
+
+Lemma ac_booldec_assume (base i : bv 64)
+      (H : bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0) :
+  bool_decide (bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0) = true.
+Proof. apply bool_decide_eq_true_2. exact H. Qed.
+
+Lemma ac_eval_assume (regs : reg_map) (base i : bv 64)
+      (HR0 : regs !! "R0" = Some (RVal_Bits base))
+      (HR3 : regs !! "R3" = Some (RVal_Bits i))
+      (H : bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0) :
+  eval_a_exp regs ac_assume_exp = Some (Val_Bool true).
+Proof.
+  unfold ac_assume_exp.
+  lazy [eval_a_exp eval_assume_val mapM map_imap mbind option_bind read_accessor eq_var_name].
+  rewrite HR0.
+  rewrite HR3.
+  ls_lazy.
+  rewrite (ac_booldec_assume base i H).
+  reflexivity.
+Qed.
+
+Lemma ac_booldec_align (base i : bv 64)
+      (H : ac_addr base i = bv_and (ac_addr base i) (BV 64 0xfffffffffffffff8)) :
+  bool_decide (ac_addr base i = bv_and (ac_addr base i) (BV 64 0xfffffffffffffff8)) = true.
+Proof. apply bool_decide_eq_true_2. exact H. Qed.
+
+Lemma exec_ac (base len tgt i v : bv 64) (r4 : bv 64) (mem : mem_map) :
+  bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0 ->
+  ac_addr base i = bv_and (ac_addr base i) (BV 64 0xfffffffffffffff8) ->
+  read_mem mem (bv_unsigned (ac_rdbase base i)) 8 = Some (bv_to_bvn v) ->
+  nsteps 34
+    ([ls_θ ac (ls_regs_nzcv base len tgt i r4 (BV 64 0x1030000c)
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem)
+    []
+    ([ls_θ a10 (ls_regs_nzcv base len tgt i v (BV 64 0x10300010)
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem).
+Proof.
+  intros H_assume H_align H_mem.
+  (* events 1..14: the AssumeRegs (6 system regs, EDSCR/OSDLR/OSLSR, then    *)
+  (* DeclareConst 3, PSTATE.EL, PSTATE.nRW, SCR_EL3, SCTLR_EL2).             *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* events 15..16: DeclareConst 26 (fresh R0), DeclareConst 27 (fresh R3).  *)
+  ls_step.
+  ls_step.
+  (* event 17: the generated alignment Assume; its evaluation is stuck on    *)
+  (* the symbolic bool_decide (R0 + R3*8) & 0xfff0000000000007 = 0, on top of *)
+  (* the two AVal_Var register reads (resolved by reflexivity against the    *)
+  (* concrete register map). Resolve the bool_decide propositionally via     *)
+  (* H_assume.                                                               *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - eapply AssumeS;
+      eapply ac_eval_assume;
+      [ reflexivity | reflexivity | exact H_assume ].
+    - ls_consequences.
+  }
+  (* events 18..19: ReadReg R3 (pins symbol 27 to i), ReadReg R0 (pins        *)
+  (* symbol 26 to base).                                                     *)
+  ls_step.
+  ls_step.
+  (* event 20: DefineConst 70 (the effective address). *)
+  ls_step.
+  (* event 21: DefineConst 74 - the 8-alignment check (E = E & ~0x7); its    *)
+  (* evaluation is stuck on the symbolic bool_decide, resolved via H_align.  *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - ls_change_trace.
+      eapply DefineConstS.
+      ls_lazy.
+      rewrite (ac_booldec_align base i H_align).
+      reflexivity.
+    - ls_consequences.
+  }
+  (* event 22: ReadReg PSTATE.D. *)
+  ls_step.
+  (* events 23..26: DefineConst 1249 (copy), DefineConst 1397 (56-bit        *)
+  (* address reshape), DefineConst 1398 (zero-extend), DeclareConst 1399     *)
+  (* (fresh loaded-value).                                                   *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 27: ReadMem at the reshaped address, len 8.  Manual step: the     *)
+  (* premise read_mem mem .. 8 = Some .. decides which side of the isla      *)
+  (* memory case we are in.                                                  *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - ls_change_trace.
+      apply ReadMemS.
+    - eexists (ac_rdbase base i).
+      eexists v. eexists v.
+      split; [ reflexivity |
+      split; [ reflexivity |
+      split; [ vm_compute; reflexivity |
+        rewrite H_mem;
+        split; [ reflexivity |
+        split; [ reflexivity |
+        split; [ reflexivity |
+                 left; split; [ reflexivity | reflexivity ] ]]]]]].
+  }
+  (* event 28: DefineConst 1403 (copy of the loaded value). *)
+  ls_step.
+  (* event 29: WriteReg R4. *)
+  ls_step.
+  (* events 30..33: DeclareConst 1404, ReadReg _PC, DefineConst 1405 (pc+4), *)
+  (* WriteReg _PC.                                                           *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 34: tnil -> LDone, fetching the successor a10 at pc + 4. *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - ls_change_trace.
+      apply DoneES.
+    - split;
+      [ reflexivity
+      | eexists (BV 64 0x10300010);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x1030000c) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x10300010)));
+          rewrite bv_add_pc_ac10;
+          reflexivity
+        | rewrite ls_instrs_a10;
+          split;
+          [ reflexivity
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
+  }
+  rewrite bv_add_pc_ac10.
   apply nsteps_refl.
 Qed.
