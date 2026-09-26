@@ -1276,3 +1276,99 @@ Proof.
   rewrite bv_add_pc_18.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* NZCV-preserving variants.                                                 *)
+(*                                                                           *)
+(* In the continue path the loop arrives at a18/a1c carrying the NZCV word   *)
+(* produced by exec_a10 (N = cmp_flag_n v tgt, Z = 0, C = cmp_flag_c10,      *)
+(* V = cmp_flag_v10).  Neither a18 (add x3, x3, #1) nor a1c (b #0x10300004)  *)
+(* touches the PSTATE flags, so the theorems below preserve an ARBITRARY     *)
+(* N/Z/C/V (any bv 1) across the executions, matching the real architectural *)
+(* state without resetting the flags.                                        *)
+(*                                                                           *)
+(* The step bodies are exactly those of the concrete-flag exec_a18 /         *)
+(* exec_a1c: a18 is 8 ls_steps + DoneES, a1c is 16 ls_steps + DoneES.        *)
+(* ------------------------------------------------------------------------ *)
+
+Lemma exec_a18_nzcv (base len tgt i r4 : bv 64) (N Z C V : bv 1) (mem : mem_map) :
+  nsteps 9
+    ([ls_θ a18 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300018) N Z C V)], ls_σ mem)
+    []
+    ([ls_θ a1c (ls_regs_nzcv base len tgt
+        (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) r4
+        (BV 64 0x1030001c) N Z C V)], ls_σ mem).
+Proof.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply DoneES.
+    - split; [ reflexivity | ].
+      eexists (BV 64 0x1030001c).
+      split.
+      + change (Some (RVal_Bits (bv_add (BV 64 0x10300018) (BV 64 4)))
+                 = Some (RVal_Bits (BV 64 0x1030001c))).
+        do 4 f_equal.
+        exact bv_add_pc.
+      + rewrite ls_instrs_a1c.
+        split; [ reflexivity | ].
+        split; [ reflexivity | reflexivity ].
+  }
+  rewrite bv_add_pc.
+  apply nsteps_refl.
+Qed.
+
+Lemma exec_a1c_nzcv (base len tgt i r4 : bv 64) (N Z C V : bv 1) (mem : mem_map) :
+  nsteps 17
+    ([ls_θ a1c (ls_regs_nzcv base len tgt
+        (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) r4
+        (BV 64 0x1030001c) N Z C V)], ls_σ mem)
+    []
+    ([ls_θ a4 (ls_regs_nzcv base len tgt
+        (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) r4
+        (BV 64 0x10300004) N Z C V)], ls_σ mem).
+Proof.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply DoneES.
+    - split; [ reflexivity | ].
+      eexists (BV 64 0x10300004).
+      split.
+      + change (Some (RVal_Bits (bv_add (BV 64 0x1030001c) (BV 64 0xffffffffffffffe8)))
+                 = Some (RVal_Bits (BV 64 0x10300004))).
+        do 4 f_equal.
+        exact bv_add_pc_a1c.
+      + rewrite ls_instrs_a4.
+        split; [ reflexivity | ].
+        split; [ reflexivity | reflexivity ].
+  }
+  rewrite bv_add_pc_a1c.
+  apply nsteps_refl.
+Qed.
