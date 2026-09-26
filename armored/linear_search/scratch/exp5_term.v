@@ -1372,3 +1372,86 @@ Proof.
   rewrite bv_add_pc_a1c.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* a4_nzcv: NZCV-parameterized variant of exec_a4.                           *)
+(*                                                                           *)
+(* The comparison at 0x10300004 reads only R3 and R1 and unconditionally      *)
+(* overwrites PSTATE.N/Z/C/V via the four WriteReg events.  The incoming     *)
+(* flags N0/Z0/C0/V0 are therefore never read: the same execution reaches a8 *)
+(* with N = 1, Z = 0, C = 0, V = 0 for arbitrary incoming flags.  This       *)
+(* mirrors exec_a4 step-for-step, reuses its symbolic CMP evaluation          *)
+(* (eval_e57_def) and its pack lemmas, and takes no assumption on the         *)
+(* incoming flags.                                                            *)
+(* ------------------------------------------------------------------------ *)
+
+Lemma exec_a4_nzcv (base len tgt i r4 : bv 64) (N0 Z0 C0 V0 : bv 1) (mem : mem_map) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  nsteps 22
+    ([ls_θ a4 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300004) N0 Z0 C0 V0)], ls_σ mem)
+    []
+    ([ls_θ a8 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300008)
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem).
+Proof.
+  intros Hlt Hb.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* step 9: DefineConst 57 (the NZCV word).  Its evaluation is stuck on the  *)
+  (* three symbolic [bool_decide] flag conditions; resolve them proposition- *)
+  (* ally using the loop hypotheses.                                          *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - eapply DefineConstS.
+      rewrite (eval_e57_def i len (conj Hlt Hb)).
+      reflexivity.
+    - ls_consequences.
+  }
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply DoneES.
+    - split;
+      [ reflexivity
+      | eexists (BV 64 0x10300008);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x10300004) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x10300008)));
+          do 4 f_equal;
+          exact bv_add_pc_8
+        | rewrite ls_instrs_a8;
+          split;
+          [ (try (rewrite (n_pack i len); rewrite (e57_nzcv_n_one i len (conj Hlt Hb));
+                  rewrite (z_pack i len); rewrite (e57_nzcv_z_zero i len);
+                  rewrite (c_pack i len); rewrite (e57_nzcv_c_zero i len);
+                  rewrite (v_pack i len); rewrite (e57_nzcv_v_zero i len); cbn; reflexivity);
+             try (change (Some (RVal_Bits (bv_add (BV 64 0x10300004) (BV 64 4)))
+                           = Some (RVal_Bits (BV 64 0x10300008)));
+                  do 4 f_equal; exact bv_add_pc_8);
+             try reflexivity)
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
+  }
+  rewrite bv_add_pc_8.
+  apply nsteps_refl.
+Qed.
