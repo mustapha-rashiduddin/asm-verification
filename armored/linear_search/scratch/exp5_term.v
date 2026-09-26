@@ -1001,3 +1001,190 @@ Proof.
   rewrite bv_add_pc_ac10.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* a10: cmp x4, x2 (v vs tgt) at pc 0x10300010, computing NZCV into PSTATE, *)
+(* falling through to a14 at 0x10300014.                                    *)
+(*                                                                           *)
+(* The continuer (loop) case has v != tgt (not yet found), so Z = 0 and the  *)
+(* following b.eq at a14 falls through.  N, C, V are not decidable from      *)
+(* v != tgt alone, so they are left as the actual computed flag values.      *)
+(* The register R4 (= the loaded value v) is preserved by the compare.       *)
+(*                                                                           *)
+(* The four raw flag conditions inside DefineConst 57 are                     *)
+(*   Z : bv_extract/res64 = 0          (decides to false given v != tgt)      *)
+(*   C : bv_zero_extend 128 (res64) = cmp_sum128                              *)
+(*   V : bv_sign_extend 128 (res64)  = bv_add (sign-extended a) + 1           *)
+(* The C/V guards stay symbolic, so the lazy reduction of the trace's         *)
+(* DefineConst 57 is blocked by [match (if bool_decide ...)]; we rewrite      *)
+(* those guarded option-terms to [Some (Val_Bits (cmp_flag_c10/v10 ...))]     *)
+(* so the evaluator's reduction proceeds to a plain concatenation.            *)
+(* ------------------------------------------------------------------------ *)
+
+(* C/V flag values with the trace's raw equality conditions (the same form   *)
+(* the lazy-reduced evaluation is blocked on), as plain guarded bvs so that   *)
+(* the evaluator's if-then-else is definitionally the stored flag value.      *)
+Definition cmp_flag_c10 (v tgt : bv 64) : bv 1 :=
+  if bool_decide
+    (bv_zero_extend 128 (bv_extract 0 64 (cmp_sum128 v tgt)) = cmp_sum128 v tgt)
+    then BV 1 0 else BV 1 1.
+
+Definition cmp_flag_v10 (v tgt : bv 64) : bv 1 :=
+  if bool_decide
+    (bv_sign_extend 128 (bv_extract 0 64 (cmp_sum128 v tgt)) =
+     bv_add (bv_add (bv_sign_extend 128 v) (bv_sign_extend 128 (bv_not tgt))) (BV 128 1))
+    then BV 1 0 else BV 1 1.
+
+Definition cmp_flags10 (v tgt : bv 64) : bv 4 :=
+  bv_concat 4
+    (bv_concat 3
+       (bv_concat 2 (cmp_flag_n v tgt) (BV 1 0))
+       (cmp_flag_c10 v tgt))
+    (cmp_flag_v10 v tgt).
+
+Lemma bv_add_pc_14 :
+  bv_add (BV 64 0x10300010) (BV 64 4) = BV 64 0x10300014.
+Proof. apply bv_eq. rewrite bv_add_unsigned. rewrite bv_unsigned_BV. rewrite bv_unsigned_BV. unfold bv_wrap, bv_modulus. reflexivity. Qed.
+
+Lemma ls_instrs_a14 : ls_instrs !! (BV 64 0x10300014) = Some a14.
+Proof. reflexivity. Qed.
+
+Lemma booldec_Z_false_ne (v tgt : bv 64) (Hne : v ≠ tgt) :
+  bool_decide
+    (bv_extract 0 64
+       (bv_add (bv_add (bv_zero_extend 128 v) (bv_zero_extend 128 (bv_not tgt))) (BV 128 1)) =
+     BV 64 0) = false.
+Proof.
+  apply bool_decide_eq_false_2. intro Hze.
+  apply (proj1 (cmp_res64_zero_iff v tgt)) in Hze.
+  exfalso. apply Hne. apply (proj2 (bv_eq 64 v tgt)). exact Hze.
+Qed.
+
+Lemma cmp_c_guard (v tgt : bv 64) :
+  (if bool_decide (bv_zero_extend 128 (cmp_res64 v tgt) = cmp_sum128 v tgt)
+   then Some (Val_Bits (BV 1 0)) else Some (Val_Bits (BV 1 1)))
+  = Some (Val_Bits (cmp_flag_c10 v tgt)).
+Proof.
+  unfold cmp_flag_c10.
+  change (bool_decide (bv_zero_extend 128 (cmp_res64 v tgt) = cmp_sum128 v tgt))
+    with (bool_decide (bv_zero_extend 128 (bv_extract 0 64 (cmp_sum128 v tgt)) = cmp_sum128 v tgt)).
+  destruct (bool_decide _); reflexivity.
+Qed.
+
+Lemma cmp_v_guard (v tgt : bv 64) :
+  (if bool_decide (bv_sign_extend 128 (cmp_res64 v tgt) =
+                   bv_add (bv_add (bv_sign_extend 128 v) (bv_sign_extend 128 (bv_not tgt))) (BV 128 1))
+   then Some (Val_Bits (BV 1 0)) else Some (Val_Bits (BV 1 1)))
+  = Some (Val_Bits (cmp_flag_v10 v tgt)).
+Proof.
+  unfold cmp_flag_v10.
+  change (bool_decide (bv_sign_extend 128 (cmp_res64 v tgt) =
+                       bv_add (bv_add (bv_sign_extend 128 v) (bv_sign_extend 128 (bv_not tgt))) (BV 128 1)))
+    with (bool_decide (bv_sign_extend 128 (bv_extract 0 64 (cmp_sum128 v tgt)) =
+                       bv_add (bv_add (bv_sign_extend 128 v) (bv_sign_extend 128 (bv_not tgt))) (BV 128 1))).
+  destruct (bool_decide _); reflexivity.
+Qed.
+
+(* The full NZCV value produced by DefineConst 57 under v != tgt: N is the    *)
+(* concrete (symbolic) sign bit of v - tgt, Z = 0, C/V carry the raw-guard    *)
+(* formulas.                                                                  *)
+Lemma eval_e57_ne (v tgt : bv 64) (Hne : v ≠ tgt) :
+  eval_exp (e57_def v tgt) = Some (Val_Bits (cmp_flags10 v tgt)).
+Proof.
+  unfold e57_def, cmp_flags10.
+  lazy [eval_exp eval_a_exp eval_assume_val mapM map_imap mbind option_bind eval_unop eval_manyop eval_binop subst_val_exp subst_val_base_val eq_var_name Z.eqb Zeq_bool map option_fmap option_map fmap mret option_ret guard_or mthrow option_mfail foldl bvn_to_bv bvn_n bvn_val decide decide_rel BinNat.N.eq_dec N.eq_dec N_rec N_rect N.add N.sub Pos.add Pos.succ Pos.pred Pos.sub_mask Pos.double_mask Pos.succ_double_mask Pos.pred_double Pos.double_pred_mask sumbool_rec sumbool_rect BinPos.Pos.eq_dec Pos.eq_dec positive_rect positive_rec eq_rect eq_ind eq_ind_r eq_rec eq_rec_r eq_rect_r eq_sym].
+  rewrite (booldec_Z_false_ne v tgt Hne).
+  rewrite (cmp_c_guard v tgt).
+  rewrite (cmp_v_guard v tgt).
+  rewrite bv_extract_3f.
+  unfold cmp_flag_n.
+  reflexivity.
+Qed.
+
+(* The WriteReg/extract chain leaves the four PSTATE fields as extracts of    *)
+(* the DefineConst-57 word; relate them to the stored flag values.            *)
+Lemma flags10_n (v tgt : bv 64) :
+  bv_extract 3 1 (cmp_flags10 v tgt) = cmp_flag_n v tgt.
+Proof. unfold cmp_flags10. bv_solve. Qed.
+
+Lemma flags10_z (v tgt : bv 64) :
+  bv_extract 2 1 (cmp_flags10 v tgt) = BV 1 0.
+Proof. unfold cmp_flags10. bv_solve. Qed.
+
+Lemma flags10_c (v tgt : bv 64) :
+  bv_extract 1 1 (cmp_flags10 v tgt) = cmp_flag_c10 v tgt.
+Proof. unfold cmp_flags10. bv_solve. Qed.
+
+Lemma flags10_v (v tgt : bv 64) :
+  bv_extract 0 1 (cmp_flags10 v tgt) = cmp_flag_v10 v tgt.
+Proof. unfold cmp_flags10. bv_solve. Qed.
+
+Lemma exec_a10 (base len tgt i v : bv 64) (mem : mem_map) :
+  v ≠ tgt ->
+  nsteps 22
+    ([ls_θ a10 (ls_regs_nzcv base len tgt i v (BV 64 0x10300010)
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem)
+    []
+    ([ls_θ a14 (ls_regs_nzcv base len tgt i v (BV 64 0x10300014)
+              (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt))], ls_σ mem).
+Proof.
+  intro Hne.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* step 9: DefineConst 57 (the NZCV word).  Its evaluation is blocked on    *)
+  (* the symbolic [bool_decide] flag conditions; resolve Z (via v != tgt) and  *)
+  (* fold the C/V guards into their guarded flag values.                      *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - eapply DefineConstS.
+      rewrite (eval_e57_ne v tgt Hne).
+      reflexivity.
+    - ls_consequences.
+  }
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - ls_change_trace.
+      apply DoneES.
+    - split;
+      [ reflexivity
+      | eexists (BV 64 0x10300014);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x10300010) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x10300014)));
+          rewrite bv_add_pc_14;
+          reflexivity
+        | rewrite ls_instrs_a14;
+          split;
+          [ (try (rewrite (flags10_n v tgt); rewrite (flags10_z v tgt);
+                  rewrite (flags10_c v tgt); rewrite (flags10_v v tgt); cbn; reflexivity);
+             try (change (Some (RVal_Bits (bv_add (BV 64 0x10300010) (BV 64 4)))
+                       = Some (RVal_Bits (BV 64 0x10300014)));
+                  rewrite bv_add_pc_14; reflexivity);
+             try reflexivity)
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
+  }
+  rewrite bv_add_pc_14.
+  apply nsteps_refl.
+Qed.
