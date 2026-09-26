@@ -705,3 +705,90 @@ Proof.
   rewrite bv_add_pc_8.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* a8: b.hs 0x10300020 (branch if higher-or-same, i.e. PSTATE.C = 1).        *)
+(*                                                                           *)
+(* In the continue case C = 0, so the branch falls through.  The trace is    *)
+(*                                                                           *)
+(*   9 AssumeRegs, DeclareConst 2, ReadReg PSTATE.C, DefineConst 27          *)
+(*     (= C == 1), tcases [ branch taken; branch fall ],                     *)
+(*   fall branch: Assert (Not 27), DeclareConst 49, ReadReg _PC,             *)
+(*     DefineConst 50 (= pc + 4), WriteReg _PC, tnil.                        *)
+(*                                                                           *)
+(* 19 events: 9 plus DeclareConst / ReadReg / DefineConst (C, 27), the       *)
+(* tcases choice, the 5 events of the fall branch, and DoneES.               *)
+(* ------------------------------------------------------------------------ *)
+
+Lemma bv_add_pc_ac :
+  bv_add (BV 64 0x10300008) (BV 64 4) = BV 64 0x1030000c.
+Proof. apply bv_eq. rewrite bv_add_unsigned. rewrite bv_unsigned_BV. rewrite bv_unsigned_BV. unfold bv_wrap, bv_modulus. reflexivity. Qed.
+
+Lemma ls_instrs_ac : ls_instrs !! (BV 64 0x1030000c) = Some ac.
+Proof. reflexivity. Qed.
+
+Lemma exec_a8 (base len tgt i r4 : bv 64) (mem : mem_map) :
+  nsteps 19
+    ([ls_θ a8 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300008)
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem)
+    []
+    ([ls_θ ac (ls_regs_nzcv base len tgt i r4 (bv_add (BV 64 0x10300008) (BV 64 4))
+              (BV 1 1) (BV 1 0) (BV 1 0) (BV 1 0))], ls_σ mem).
+Proof.
+  (* events 1..6: the six system-register AssumeRegs. *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 7: DeclareConst 2 (the fresh 1-bit symbol for PSTATE.C). *)
+  ls_step.
+  (* events 8..10: AssumeReg PSTATE.EL, PSTATE.nRW, SCR_EL3. *)
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 11: ReadReg PSTATE.C; the reflexive read pins the fresh symbol    *)
+  (* to the concrete C = 0 carried in from exec_a4.                          *)
+  ls_step.
+  (* event 12: DefineConst 27 = (C == 1) - now evaluates to false. *)
+  ls_step.
+  (* event 13: tcases; choose the fall-through branch (its assertion claims  *)
+  (* ~27, which the concrete C = 0 makes true).                              *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply CasesES.
+      right; left; reflexivity.
+    - ls_consequences.
+  }
+  (* fall branch: Assert (Not 27), DeclareConst 49, ReadReg _PC,             *)
+  (* DefineConst 50 (pc + 4), WriteReg _PC.                                  *)
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  (* event 19: tnil -> LDone, fetching the successor ac at pc + 4. *)
+  eapply nsteps_step.
+  { eapply step_single'.
+    eapply (SeqStep _ _ _ _ None _ _).
+    - reflexivity.
+    - apply DoneES.
+    - split;
+      [ reflexivity
+      | eexists (BV 64 0x1030000c);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x10300008) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x1030000c)));
+          rewrite bv_add_pc_ac;
+          reflexivity
+        | rewrite ls_instrs_ac;
+          split;
+          [ reflexivity
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
+  }
+  rewrite bv_add_pc_ac.
+  apply nsteps_refl.
+Qed.
