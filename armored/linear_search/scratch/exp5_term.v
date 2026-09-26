@@ -354,6 +354,28 @@ Proof. unfold e57_nzcv. bv_solve. Qed.
 Lemma e57_nzcv_v_zero (i len : bv 64) : bv_extract 0 1 (e57_nzcv i len) = BV 1 0.
 Proof. unfold e57_nzcv. bv_solve. Qed.
 
+(* The trace writes the PSTATE bits as plain extracts of the DefineConst-57  *)
+(* value (a raw concat, not the folded e57_nzcv); bridge via convertibility. *)
+Lemma n_pack (i len : bv 64) :
+  bv_extract 3 1 (bv_concat 4 (bv_concat 3 (bv_concat 2 (cmp_flag_n i len) (BV 1 0)) (BV 1 0)) (BV 1 0)) =
+  bv_extract 3 1 (e57_nzcv i len).
+Proof. reflexivity. Qed.
+
+Lemma z_pack (i len : bv 64) :
+  bv_extract 2 1 (bv_concat 4 (bv_concat 3 (bv_concat 2 (cmp_flag_n i len) (BV 1 0)) (BV 1 0)) (BV 1 0)) =
+  bv_extract 2 1 (e57_nzcv i len).
+Proof. reflexivity. Qed.
+
+Lemma c_pack (i len : bv 64) :
+  bv_extract 1 1 (bv_concat 4 (bv_concat 3 (bv_concat 2 (cmp_flag_n i len) (BV 1 0)) (BV 1 0)) (BV 1 0)) =
+  bv_extract 1 1 (e57_nzcv i len).
+Proof. reflexivity. Qed.
+
+Lemma v_pack (i len : bv 64) :
+  bv_extract 0 1 (bv_concat 4 (bv_concat 3 (bv_concat 2 (cmp_flag_n i len) (BV 1 0)) (BV 1 0)) (BV 1 0)) =
+  bv_extract 0 1 (e57_nzcv i len).
+Proof. reflexivity. Qed.
+
 (* ------------------------------------------------------------------------ *)
 (* Step automation: a full Iris thread step from the actual seq_step         *)
 (* operational semantics.                                                   *)
@@ -383,7 +405,6 @@ Ltac ls_trace_step :=
       let t := eval simpl in t in
       change_no_check (trace_step t regs κ st)
   end;
-  match goal with |- ?G => idtac "T-HEAD:"; idtac G end;
   lazymatch goal with
   | |- trace_step (Smt (DeclareConst _ (Ty_BitVec _)) _ :t: _) _ _ _ =>
       eapply (DeclareConstBitVecS' _)
@@ -391,7 +412,6 @@ Ltac ls_trace_step :=
       apply DeclareConstBoolS
   | |- trace_step (Smt (DefineConst _ _) _ :t: _) _ _ _ =>
       eapply DefineConstS;
-      match goal with |- ?G => idtac "EVAL:"; idtac G end;
       ls_eval
   | |- trace_step (Smt (Assert _) _ :t: _) _ _ _ =>
       eapply AssertS; ls_eval
@@ -510,8 +530,12 @@ Lemma exec_a1c (base len tgt i r4 : bv 64) (mem : mem_map) :
         (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) r4
         (BV 64 0x10300004))], ls_σ mem).
 Proof.
-  ls_step.
 ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
+  ls_step.
   ls_step.
   ls_step.
   ls_step.
@@ -653,27 +677,30 @@ Proof.
   ls_step.
   ls_step.
   ls_step.
-  ls_step.
   eapply nsteps_step.
   { eapply step_single'.
     eapply (SeqStep _ _ _ _ None _ _).
     - reflexivity.
     - apply DoneES.
-    - split.
-      + rewrite (e57_nzcv_n_one i len (conj Hlt Hb)).
-        rewrite (e57_nzcv_z_zero i len).
-        rewrite (e57_nzcv_c_zero i len).
-        rewrite (e57_nzcv_v_zero i len).
-        reflexivity.
-      + eexists (BV 64 0x10300008).
-        split.
-        * change (Some (RVal_Bits (bv_add (BV 64 0x10300004) (BV 64 4)))
-                   = Some (RVal_Bits (BV 64 0x10300008))).
-          do 4 f_equal.
-          exact bv_add_pc_8.
-        * rewrite ls_instrs_a8.
-          split; [ reflexivity | ].
-          split; [ reflexivity | reflexivity ].
+    - split;
+      [ reflexivity
+| eexists (BV 64 0x10300008);
+        split;
+        [ change (Some (RVal_Bits (bv_add (BV 64 0x10300004) (BV 64 4)))
+                  = Some (RVal_Bits (BV 64 0x10300008)));
+          do 4 f_equal;
+          exact bv_add_pc_8
+        | rewrite ls_instrs_a8;
+          split;
+          [ (try (rewrite (n_pack i len); rewrite (e57_nzcv_n_one i len (conj Hlt Hb));
+                  rewrite (z_pack i len); rewrite (e57_nzcv_z_zero i len);
+                  rewrite (c_pack i len); rewrite (e57_nzcv_c_zero i len);
+                  rewrite (v_pack i len); rewrite (e57_nzcv_v_zero i len); cbn; reflexivity);
+             try (change (Some (RVal_Bits (bv_add (BV 64 0x10300004) (BV 64 4)))
+                          = Some (RVal_Bits (BV 64 0x10300008)));
+                  do 4 f_equal; exact bv_add_pc_8);
+             try reflexivity)
+          | try (split; [ reflexivity | reflexivity ]); try reflexivity ] ] ].
   }
   rewrite bv_add_pc_8.
   apply nsteps_refl.
