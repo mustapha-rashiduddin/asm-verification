@@ -721,3 +721,49 @@ Verification in `/home/ubuntu/asm-verification/armored/linear_search`:
   context**.
 - No assembly or generated-trace changes. No termination claim (still the next
   open item).
+
+## 2026-09-26 — trace-level CONTINUE back-edge `exec_continue_backedge` Qed
+
+Composed the seven Qed component lemmas of the loop body into ONE theorem for
+the real CONTINUE back-edge, in `armored/linear_search/scratch/exp5_term.v`.
+No trace was re-executed and no existing Qed theorem was changed.
+
+Chain and step counts: `a4 →a8 22, a8 →ac 19, ac →a10 34, a10 →a14 22,
+a14 →a18 19, a18 →a1c 9, a1c →a4 17`; total `nsteps 142`.
+
+Result: PC `0x10300004` / `R3 = i` / `R4 = r4` / arbitrary `N0 Z0 C0 V0` maps to
+PC `0x10300004` / `R3 = i + 1` / `R4 = v` with NZCV exactly
+`(cmp_flag_n v tgt, BV 1 0, cmp_flag_c10 v tgt, cmp_flag_v10 v tgt)` — the flags
+that survive from `cmp x4, x2`. Incoming flags need no assumption: `a4`'s
+`DefineConst 57` overwrites N/Z/C/V with `(1,0,0,0)` before any read.
+
+Facts that drove the structure:
+
+- Iris' `language.v` has no `nsteps_trans`/`nsteps_plus` (only `nsteps_refl` and
+  `nsteps_l`), so one local helper was genuinely required: `nsteps_trans0`,
+  `nsteps n ρ1 κ ρ2 → nsteps m ρ2 [] ρ3 → nsteps (n+m) ρ1 κ ρ3` (9 lines, no
+  assumptions). The empty second observation list records that the continuation
+  run is fault-free, not an abstraction of semantics.
+- Call sites must pin `(n := …) (m := …)`: `eapply … with (m := 120)` leaves
+  `?n + 120` in the goal and unification cannot invert it.
+- In this file numerals inside tactic `with` clauses elaborate as `Z`; annotate
+  `(n := 22%nat)`.
+- Two junctions needed PC normalization only: `rewrite bv_add_pc_ac` for
+  `a8 → ac` and `rewrite bv_add_pc_18` for `a14 → a18`. Both are
+  definitionally equal states, so nothing was weakened.
+- Premises are exactly the union of the component premises (2 from
+  `exec_a4_nzcv`, 3 from `exec_ac`, 1 from `exec_a10`); nothing invented.
+
+Verification:
+
+- `coqc -q -Q .../scratch "" -R .../traces isla.instructions.linear_search
+  -R /home/ubuntu/rems/islaris/theories isla .../scratch/exp5_term.v` → exit 0.
+- `Print Assumptions exec_continue_backedge` → **Closed under the global
+  context**.
+- `exp5_term.v` change is purely additive (71 insertions, 0 deletions). No
+  assembly, generated-trace, or `opsem.v` change; no `Admitted`/`admit`/
+  `Axiom`.
+
+Still open (deliberately not started): exits (`0x20` not-found, `0x28` found),
+first-encounter/uniqueness of the match, a generic framework, and the
+termination induction.

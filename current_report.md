@@ -1,4 +1,149 @@
-# linear_search Islaris proof - whole-function composition closed
+# linear_search Islaris proof - current status
+
+## Latest milestone (2026-09-26): trace-level CONTINUE back-edge `exec_continue_backedge` is Qed
+
+### Status
+
+- `exec_continue_backedge` (the real CONTINUE back-edge, one full pass of the
+  loop body from PC `0x10300004` with `R3 = i` back to PC `0x10300004` with
+  `R3 = i + 1`): **Qed** (genuine `Qed`, no residual or shelved goals,
+  `coqc` exit 0, `Print Assumptions exec_continue_backedge` → **Closed under
+  the global context**). Proof file: `armored/linear_search/scratch/exp5_term.v`.
+- The theorem is **pure composition** of seven already-proved component lemmas.
+  No instruction trace was re-executed, no existing Qed theorem was changed, and
+  Islaris semantics, assembly, and generated traces were not touched.
+- Component chain (all `Qed`, all in `armored/linear_search/scratch/exp5_term.v`):
+
+  | lemma            | from | to   | steps | premise-free |
+  |------------------|------|------|-------|--------------|
+  | `exec_a4_nzcv`   | `a4` | `a8` | 22    | no (2)       |
+  | `exec_a8`        | `a8` | `ac` | 19    | yes          |
+  | `exec_ac`        | `ac` | `a10`| 34    | no (3)       |
+  | `exec_a10`       | `a10`| `a14`| 22    | no (1)       |
+  | `exec_a14`       | `a14`| `a18`| 19    | yes          |
+  | `exec_a18_nzcv`  | `a18`| `a1c`| 9     | yes          |
+  | `exec_a1c_nzcv`  | `a1c`| `a4` | 17    | yes          |
+
+  `exec_a4_nzcv`, `exec_a18_nzcv`, and `exec_a1c_nzcv` are NZCV-parameterized
+  (`ls_regs_nzcv`), so no fake NZCV reset is needed anywhere in the chain.
+
+### Exact theorem statement
+
+```coq
+Lemma exec_continue_backedge (base len tgt i r4 v : bv 64) (N0 Z0 C0 V0 : bv 1) (mem : mem_map) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0 ->
+  ac_addr base i = bv_and (ac_addr base i) (BV 64 0xfffffffffffffff8) ->
+  read_mem mem (bv_unsigned (ac_rdbase base i)) 8 = Some (bv_to_bvn v) ->
+  v ≠ tgt ->
+  nsteps 142
+    ([ls_θ a4 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300004) N0 Z0 C0 V0)], ls_σ mem)
+    []
+    ([ls_θ a4 (ls_regs_nzcv base len tgt
+        (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) v
+        (BV 64 0x10300004)
+        (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt))], ls_σ mem).
+```
+
+Start: trace `a4`, PC `0x10300004`, `R0 = base`, `R1 = len`, `R2 = tgt`,
+`R3 = i`, `R4 = r4` (old), arbitrary incoming `N0 Z0 C0 V0`, memory `mem`.
+End: trace `a4`, PC `0x10300004`, `R0..R2` unchanged,
+`R3 = bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)`, `R4 = v`,
+memory unchanged, and NZCV exactly the flags that survive from `cmp x4, x2`
+through `a14`/`a18`/`a1c`: `N = cmp_flag_n v tgt`, `Z = BV 1 0`,
+`C = cmp_flag_c10 v tgt`, `V = cmp_flag_v10 v tgt`.
+
+The incoming flags are irrelevant and this is now *proved*, not assumed: the
+first instruction (`DefineConst 57`, the `a4` compare of `x3` against `x1`)
+overwrites `PSTATE.N/Z/C/V` with `(1, 0, 0, 0)` before anything reads them.
+
+### Exact total nsteps proved
+
+`142 = 22 + 19 + 34 + 22 + 19 + 9 + 17`
+(`a4`, `a8`, `ac`, `a10`, `a14`, `a18`, `a1c`), i.e. the chain
+`a4 → a8 → ac → a10 → a14 → a18 → a1c → a4`.
+
+### Composition helper: exactly one new lemma
+
+Iris' `iris/program_logic/language.v` provides only `nsteps_refl` and
+`nsteps_l`; it has **no** `nsteps_trans`/`nsteps_plus`, so the glue was
+genuinely required. It is local, minimal, and assumption-free
+(`armored/linear_search/scratch/exp5_term.v:1474`):
+
+```coq
+Lemma nsteps_trans0 n m (ρ1 ρ2 ρ3 : cfg isla_lang) (κ : list (observation isla_lang)) :
+  nsteps n ρ1 κ ρ2 ->
+  nsteps m ρ2 [] ρ3 ->
+  nsteps (n + m) ρ1 κ ρ3.
+```
+
+The empty observation list of the second run is not an abstraction of Islaris
+semantics: it records that the continuation run is a fault-free execution of a
+generated trace. Call sites must pin `(n := …) (m := …)` explicitly, because
+`?n + 120` is not invertible by unification.
+
+### No new semantic hypotheses
+
+The six premises are exactly the union of the component premises: two from
+`exec_a4_nzcv` (`i < len`, `len < 2^62`), three from `exec_ac` (the generated
+LDR alignment/address premise, the `ac_addr` alignment premise, and
+`read_mem … = Some (bv_to_bvn v)`), one from `exec_a10` (`v ≠ tgt`).
+`exec_a8`, `exec_a14`, `exec_a18_nzcv`, `exec_a1c_nzcv` are premise-free.
+Nothing was invented, strengthened, or weakened.
+
+### Interface check (every junction matched exactly)
+
+- `exec_a4_nzcv` exit: PC `0x08`, flags `(1,0,0,0)`, `R4 = r4` = `exec_a8` entry.
+- `exec_a8` exit: PC `bv_add (BV 64 0x10300008) (BV 64 4)` = `exec_ac` entry
+  PC `0x1030000c` (via `rewrite bv_add_pc_ac`; definitionally the same value).
+- `exec_ac` exit: `R4 = v` supplies the `r4` argument of `exec_a10`.
+- `exec_a10` exit: flags `(cmp_flag_n v tgt, BV 1 0, cmp_flag_c10 v tgt,
+  cmp_flag_v10 v tgt)` = `exec_a14` entry.
+- `exec_a14` exit: PC `bv_add (BV 64 0x10300014) (BV 64 4)` =
+  `exec_a18_nzcv` entry PC `0x10300018` (via `rewrite bv_add_pc_18`).
+- `exec_a18_nzcv` exit: `R3 = i + 1` = `exec_a1c_nzcv` entry.
+- `exec_a1c_nzcv` exit: the required end state, with `R4 = v` and memory `mem`.
+
+The two rewrites only normalize the PC form at a junction; the states are
+identical, not weakened.
+
+### Clean verification
+
+Exact clean compile command:
+
+```bash
+eval "$(opam env --set-switch --switch=/home/ubuntu/rems/islaris)" && export COQPATH=/home/ubuntu/rems/islaris/_build/install/default/lib/coq/user-contrib && coqc -q -Q /home/ubuntu/asm-verification/armored/linear_search/scratch "" -R /home/ubuntu/asm-verification/armored/linear_search/traces isla.instructions.linear_search -R /home/ubuntu/rems/islaris/theories isla /home/ubuntu/asm-verification/armored/linear_search/scratch/exp5_term.v
+```
+
+Result: exit status 0.
+
+```text
+Require Import exp5_term.
+Print Assumptions exec_continue_backedge.
+```
+
+Result: **Closed under the global context**.
+
+`git diff --stat` for this milestone: `exp5_term.v` purely additive
+(`71 insertions(+)`, 0 deletions). No `Admitted`/`admit`/`Axiom`/`Abort`, no
+assembly change, no generated-trace change, no `opsem.v` change, no change to
+any existing Qed theorem.
+
+### Scope deliberately not started
+
+Exits (not-found at `0x20`, found at `0x28`), first-encounter/uniqueness of the
+match, a generic framework, and the full termination induction are all still
+open. This milestone is the back-edge only.
+
+---
+
+## Earlier milestone (2026-09-22, superseded): whole-function composition closed
+
+The sections below record the earlier invariant-based attempt in
+`armored/linear_search/linear_search_proof.v` (`linear_search_loop`,
+`linear_search`, `linear_search_composed`). It was superseded by the exp2–exp5
+trace-level line of work described above; the notes are kept for history.
 
 ## Status
 

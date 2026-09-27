@@ -1455,3 +1455,74 @@ Proof.
   rewrite bv_add_pc_8.
   apply nsteps_refl.
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* Composition of the CONTINUE back-edge.                                    *)
+(*                                                                           *)
+(* Pure composition of the seven already-proved component lemmas: no trace is *)
+(* re-executed here, no existing theorem is changed, and the only new lemma is *)
+(* the generic [nsteps] transitivity helper below (Iris' [language.v] has no  *)
+(* [nsteps_trans]).  The premises are exactly the union of the premises of   *)
+(* the components -- no new semantic hypothesis is introduced.               *)
+(* ------------------------------------------------------------------------ *)
+
+(* Composition of two [nsteps] runs: [n] steps from [ρ1] to [ρ2] followed by
+   [m] pure steps from [ρ2] to [ρ3] is [n + m] steps from [ρ1] to [ρ3], keeping
+   the observations of the first run.  This is the only glue needed here: the
+   second run is a fault-free execution of a generated trace, so it carries the
+   empty observation list. *)
+Lemma nsteps_trans0 n m (ρ1 ρ2 ρ3 : cfg isla_lang) (κ : list (observation isla_lang)) :
+  nsteps n ρ1 κ ρ2 ->
+  nsteps m ρ2 [] ρ3 ->
+  nsteps (n + m) ρ1 κ ρ3.
+Proof.
+  intros H1.
+  revert m ρ3.
+  induction H1 as [| k ρa ρb ρc κ0 κs Hst Hrest IH]; intros m ρ3 Hn2.
+  - exact Hn2.
+  - eapply nsteps_l with (κ := κ0) (κs := κs).
+    + exact Hst.
+    + apply IH; exact Hn2.
+Qed.
+
+(* The full CONTINUE back-edge: from the head of the loop body at
+   PC 0x10300004 with R3 = i, one full pass reads mem[i] (when it is not tgt)
+   and comes back to PC 0x10300004 with R3 = i + 1 and R4 = v.  The incoming
+   flags N0/Z0/C0/V0 are irrelevant: the body overwrites them at the first
+   instruction and the only flags that survive the pass are the ones produced
+   by [cmp x4, x2]. *)
+Lemma exec_continue_backedge (base len tgt i r4 v : bv 64) (N0 Z0 C0 V0 : bv 1) (mem : mem_map) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  bv_and (bv_add base (bv_mul i (BV 64 8))) (BV 64 0xfff0000000000007) = BV 64 0 ->
+  ac_addr base i = bv_and (ac_addr base i) (BV 64 0xfffffffffffffff8) ->
+  read_mem mem (bv_unsigned (ac_rdbase base i)) 8 = Some (bv_to_bvn v) ->
+  v ≠ tgt ->
+  nsteps 142
+    ([ls_θ a4 (ls_regs_nzcv base len tgt i r4 (BV 64 0x10300004) N0 Z0 C0 V0)], ls_σ mem)
+    []
+    ([ls_θ a4 (ls_regs_nzcv base len tgt
+        (bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)) v
+        (BV 64 0x10300004)
+        (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt))], ls_σ mem).
+Proof.
+  intros Hlt Hb Hassume Halign Hmem Hne.
+  (* 22 + (19 + (34 + (22 + (19 + (9 + 17)))) = 142 *)
+  eapply nsteps_trans0 with (n := 22%nat) (m := 120%nat) (κ := []).
+  - exact (exec_a4_nzcv base len tgt i r4 N0 Z0 C0 V0 mem Hlt Hb).
+  - eapply nsteps_trans0 with (n := 19%nat) (m := 101%nat) (κ := []).
+    + exact (exec_a8 base len tgt i r4 mem).
+    + eapply nsteps_trans0 with (n := 34%nat) (m := 67%nat) (κ := []).
+      * rewrite bv_add_pc_ac.
+        exact (exec_ac base len tgt i v r4 mem Hassume Halign Hmem).
+      * eapply nsteps_trans0 with (n := 22%nat) (m := 45%nat) (κ := []).
+        -- exact (exec_a10 base len tgt i v mem Hne).
+        -- eapply nsteps_trans0 with (n := 19%nat) (m := 26%nat) (κ := []).
+           ++ exact (exec_a14 base len tgt i v mem).
+           ++ eapply nsteps_trans0 with (n := 9%nat) (m := 17%nat) (κ := []).
+              ** rewrite bv_add_pc_18.
+                 exact (exec_a18_nzcv base len tgt i v
+                          (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt) mem).
+              ** exact (exec_a1c_nzcv base len tgt i v
+                          (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt) mem).
+Qed.
