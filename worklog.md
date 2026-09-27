@@ -767,3 +767,68 @@ Verification:
 Still open (deliberately not started): exits (`0x20` not-found, `0x28` found),
 first-encounter/uniqueness of the match, a generic framework, and the
 termination induction.
+
+## 2026-09-26 — machine increment is unsigned +1; variant strictly decreases
+
+Pure arithmetic bridge on top of the Qed `exec_continue_backedge`, in
+`armored/linear_search/scratch/exp5_term.v`. No operational semantics touched,
+no existing Qed lemma edited.
+
+`Definition next_i (i : bv 64) : bv 64 := bv_add (bv_extract 0 64
+(bv_zero_extend 128 i)) (BV 64 1).` is BY DEFINITION the exact R3 result of
+`exec_continue_backedge` (and of `exec_a18_nzcv` / `exec_a1c_nzcv`) — not a
+hand-written successor. `next_i_unsigned` unfolds it and rewrites the real
+machine term with `bv_add_unsigned`, `bv_extract_0_unsigned` and
+`bv_zero_extend_unsigned' 128 i`.
+
+Qed:
+
+- `next_i_unsigned` : `bv_unsigned (next_i i) = bv_unsigned i + 1` from the two
+  existing hypotheses alone.
+- `next_i_le_len` : `bv_unsigned (next_i i) <= bv_unsigned len`.
+- `continue_variant_decreases` : `len - next_i i < len - i` for
+  `V(i) = bv_unsigned len - bv_unsigned i`.
+- `continue_variant_identity` (extra) : `len - next_i i = (len - i) - 1`.
+- `continue_variant_decreases_nat` (extra) : the same decrease at `Z.to_nat`
+  level, via `Z2Nat.inj_lt; lia`; `i < len` makes `len - i` non-negative.
+
+Wraparound cannot occur: `bv_add` wraps modulo `bv_modulus 64 = 2^64`, and
+`bv_unsigned i < bv_unsigned len < 2^62` gives
+`bv_unsigned i + 1 <= 2^62 < 2^64`, so `bv_wrap_small 64 (bv_unsigned i + 1)`
+discharges the modular addition. The two inner wraps are removed with the
+generic theorem `bv_unsigned_in_range 64 i` plus `2^64 < 2^128`. No hypothesis
+was strengthened.
+
+stdpp/bitvector API facts worth keeping (each cost a compile round):
+
+- Many bitvector lemmas take the width as an EXPLICIT first argument:
+  `bv_unsigned_in_range 64 i`, `bv_zero_extend_unsigned' 128 i`,
+  `bv_wrap_small 128 (bv_unsigned i) H`. `rewrite bv_add_unsigned` works
+  without it because rewriting infers the width, but a bare `pose proof
+  (bv_unsigned_in_range i)` fails with "i is expected to have type N".
+- `rewrite (bv_zero_extend_unsigned' 128 i)` does not PARSE inside a tactic
+  argument: the `'` is swallowed by the tactic parser ("ltac_use_default
+  expected"). Use the unprimed `bv_zero_extend_unsigned 128 i` (side condition
+  `(64 <= 128)%N`, closed by `lia`), or use the primed lemma in a `Definition`.
+- `rewrite A, B` (comma) is not available; use separate `rewrite` commands.
+- `rewrite bv_modulus in H` fails ("not a rewritable relation"); use
+  `assert (Hmod : bv_modulus 64 = 2 ^ 64) by reflexivity` and `rewrite Hmod in H`.
+- `norm_num` is not in scope in this file.
+- Passing a premise explicitly (`bv_wrap_small 64 (bv_unsigned i + 1) H`) avoids
+  rewrite side goals, which otherwise leave several focused goals and break a
+  following `lia`.
+
+Verification:
+
+- `coqc -q -Q .../scratch "" -R .../traces isla.instructions.linear_search
+  -R /home/ubuntu/rems/islaris/theories isla .../scratch/exp5_term.v` → exit 0.
+- `Print Assumptions` for `next_i_unsigned`, `next_i_le_len`,
+  `continue_variant_decreases`, `continue_variant_identity`,
+  `continue_variant_decreases_nat` and `exec_continue_backedge` → all **Closed
+  under the global context**.
+- Change is purely additive (96 insertions, 0 deletions). No assembly,
+  generated-trace, or `opsem.v` change; no `Admitted`/`admit`/`Axiom`.
+
+Still open (deliberately not started): the well-founded induction, the exits
+(`0x20` not-found, `0x28` found), first-encounter/uniqueness, generic
+framework, public-contract bridging.

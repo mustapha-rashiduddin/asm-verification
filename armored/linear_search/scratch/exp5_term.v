@@ -1526,3 +1526,99 @@ Proof.
               ** exact (exec_a1c_nzcv base len tgt i v
                           (cmp_flag_n v tgt) (BV 1 0) (cmp_flag_c10 v tgt) (cmp_flag_v10 v tgt) mem).
 Qed.
+
+(* ------------------------------------------------------------------------ *)
+(* Pure arithmetic bridge: the machine-level increment IS unsigned + 1.     *)
+(*                                                                            *)
+(* [next_i] is by definition the EXACT R3 result of exec_continue_backedge:  *)
+(*                                                                            *)
+(*   bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)                *)
+(*                                                                            *)
+(* i.e. the [add x3, x3, #1] machine computation, not a hand-written          *)
+(* mathematical successor.  Everything below is Z-arithmetic on               *)
+(* [bv_unsigned]; no operational semantics is used or assumed.                 *)
+(* ------------------------------------------------------------------------ *)
+
+Definition next_i (i : bv 64) : bv 64 :=
+  bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1).
+
+(* The machine increment is ordinary unsigned i + 1, i.e. the 64-bit modular
+   addition does not wrap.  This is the crucial bridge lemma: it turns the
+   machine value produced by exec_continue_backedge into plain Z arithmetic.
+   Wraparound is impossible because [bv_unsigned i < bv_unsigned len < 2^62],
+   so [bv_unsigned i + 1 <= 2^62 < 2^64 = bv_modulus 64] and hence the
+   [bv_wrap 64] performed by [bv_add] is the identity. *)
+Lemma next_i_unsigned (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  bv_unsigned (next_i i) = bv_unsigned i + 1.
+Proof.
+  intros Hlt Hb.
+  unfold next_i.
+  (* bv_unsigned (x + y) = bv_wrap 64 (bv_unsigned x + bv_unsigned y) *)
+  rewrite bv_add_unsigned.
+  (* bv_unsigned (bv_extract 0 64 b) = bv_wrap 64 (bv_unsigned b) *)
+  rewrite bv_extract_0_unsigned.
+  (* bv_unsigned (bv_zero_extend 128 b) = bv_wrap 128 (bv_unsigned b) *)
+  rewrite (bv_zero_extend_unsigned' 128 i).
+  (* 0 <= bv_unsigned i < 2^64, the generic bitvector bound *)
+  pose proof (bv_unsigned_in_range 64 i) as Hr.
+  assert (Hmod : bv_modulus 64 = 2 ^ 64) by reflexivity.
+  rewrite Hmod in Hr.
+  (* the inner wraps are identities: bv_unsigned i < 2^64 < 2^128 *)
+  assert (Hr128 : (0 <= bv_unsigned i < 2 ^ 128)%Z) by lia.
+  rewrite (bv_wrap_small 128 (bv_unsigned i) Hr128).
+  rewrite (bv_wrap_small 64 (bv_unsigned i) Hr).
+  (* [BV 64 1] is closed, so [bv_unsigned (BV 64 1)] is convertible to 1 *)
+  change (bv_wrap 64 (bv_unsigned i + 1) = bv_unsigned i + 1).
+  apply (bv_wrap_small 64 (bv_unsigned i + 1)). lia.
+Qed.
+
+(* The new index is still inside the loop range:  i < i + 1 <= len. *)
+Lemma next_i_le_len (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned (next_i i) <= bv_unsigned len)%Z.
+Proof.
+  intros Hlt Hb.
+  rewrite (next_i_unsigned i len Hlt Hb).
+  lia.
+Qed.
+
+(* The termination variant V(i) = len - i strictly decreases along the
+   back-edge:  V(next_i i) < V(i). *)
+Lemma continue_variant_decreases (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned len - bv_unsigned (next_i i)
+     < bv_unsigned len - bv_unsigned i)%Z.
+Proof.
+  intros Hlt Hb.
+  rewrite (next_i_unsigned i len Hlt Hb).
+  lia.
+Qed.
+
+(* Exact form of the decrease: V(next_i i) = V(i) - 1. *)
+Lemma continue_variant_identity (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned len - bv_unsigned (next_i i)
+     = (bv_unsigned len - bv_unsigned i) - 1)%Z.
+Proof.
+  intros Hlt Hb.
+  rewrite (next_i_unsigned i len Hlt Hb).
+  lia.
+Qed.
+
+(* nat-level corollary, the form needed by a well-founded induction on the
+   natural-number variant [len - i]. *)
+Lemma continue_variant_decreases_nat (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (Z.to_nat (bv_unsigned len - bv_unsigned (next_i i))
+   < Z.to_nat (bv_unsigned len - bv_unsigned i))%Z.
+Proof.
+  intros Hlt Hb.
+  rewrite (next_i_unsigned i len Hlt Hb).
+  apply Z2Nat.inj_lt; lia.
+Qed.

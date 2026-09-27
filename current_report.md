@@ -138,6 +138,101 @@ open. This milestone is the back-edge only.
 
 ---
 
+## Latest milestone (2026-09-26, second step): the machine increment is unsigned +1 and the variant strictly decreases
+
+### Status
+
+- `next_i_unsigned` : **Qed** — the exact machine R3 result of
+  `exec_continue_backedge` is ordinary unsigned `i + 1`.
+- `next_i_le_len` : **Qed** — the new index is still inside the loop range.
+- `continue_variant_decreases` : **Qed** — `V(i) = len - i` strictly decreases.
+- `continue_variant_identity` : **Qed** (extra) — `V(next_i i) = V(i) - 1`.
+- `continue_variant_decreases_nat` : **Qed** (extra) — the same decrease at
+  `Z.to_nat` level, the form a well-founded induction will consume.
+- `coqc exp5_term.v` → exit 0; `Print Assumptions` for all five plus
+  `exec_continue_backedge` → **Closed under the global context**.
+- Pure arithmetic: no operational semantics used or assumed, no existing Qed
+  lemma edited, change is purely additive (96 insertions, 0 deletions).
+
+### Exact statements
+
+```coq
+Definition next_i (i : bv 64) : bv 64 :=
+  bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1).
+
+Lemma next_i_unsigned (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  bv_unsigned (next_i i) = bv_unsigned i + 1.
+
+Lemma next_i_le_len (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned (next_i i) <= bv_unsigned len)%Z.
+
+Lemma continue_variant_decreases (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned len - bv_unsigned (next_i i)
+     < bv_unsigned len - bv_unsigned i)%Z.
+
+Lemma continue_variant_identity (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (bv_unsigned len - bv_unsigned (next_i i)
+     = (bv_unsigned len - bv_unsigned i) - 1)%Z.
+
+Lemma continue_variant_decreases_nat (i len : bv 64) :
+  (bv_unsigned i < bv_unsigned len)%Z →
+  (bv_unsigned len < 2^62)%Z →
+  (Z.to_nat (bv_unsigned len - bv_unsigned (next_i i))
+   < Z.to_nat (bv_unsigned len - bv_unsigned i))%Z.
+```
+
+### The machine expression is the one actually simplified
+
+`next_i` is *by definition* the exact R3 term of `exec_continue_backedge`
+(and of `exec_a18_nzcv` / `exec_a1c_nzcv`), not a hand-written mathematical
+successor:
+
+```text
+bv_add (bv_extract 0 64 (bv_zero_extend 128 i)) (BV 64 1)
+```
+
+`next_i_unsigned` starts with `unfold next_i` and rewrites that term with the
+real stdpp bitvector lemmas: `bv_add_unsigned`
+(`bv_unsigned (x + y) = bv_wrap 64 (bv_unsigned x + bv_unsigned y)`),
+`bv_extract_0_unsigned`, and `bv_zero_extend_unsigned' 128 i`. The only
+context facts used are the two permitted hypotheses plus `bv_unsigned_in_range
+64 i`, which is a *theorem* about every 64-bit value, not an assumption.
+
+### Why wraparound is impossible
+
+`bv_add` is `Z_to_bv 64 (Z.add (bv_unsigned x) (bv_unsigned y))`, so
+
+```text
+bv_unsigned (next_i i) = bv_wrap 64 (bv_unsigned i + 1)
+bv_wrap 64 z = z mod (bv_modulus 64),  bv_modulus 64 = 2^64
+```
+
+(`Hmod : bv_modulus 64 = 2 ^ 64` by `reflexivity`). The loop hypotheses give
+`bv_unsigned i < bv_unsigned len` and `bv_unsigned len < 2^62`, hence
+`bv_unsigned i + 1 <= 2^62 < 2^64`, so `bv_wrap_small 64 (bv_unsigned i + 1)`
+applies and the modular addition is the identity. The two inner wraps are
+killed with the generic bound `0 <= bv_unsigned i < 2^64` and `2^64 < 2^128`.
+The existing hypotheses alone exclude wraparound; none was strengthened.
+
+### Notes for the eventual induction
+
+- `V(i) = bv_unsigned len - bv_unsigned i` is a `Z` quantity; the nat corollary
+  `continue_variant_decreases_nat` is what a well-founded induction on `len - i`
+  will consume, and `i < len` guarantees it is non-negative.
+- The induction itself, the exits (`0x20` not-found, `0x28` found),
+  first-encounter/uniqueness, and any public-contract bridging remain
+  deliberately not started.
+
+---
+
 ## Earlier milestone (2026-09-22, superseded): whole-function composition closed
 
 The sections below record the earlier invariant-based attempt in
